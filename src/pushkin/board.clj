@@ -14,7 +14,6 @@
 
 (defrecord Board
   [dim
-   eyes
    empty-positions
    positions
    white-score
@@ -58,28 +57,6 @@
 
 ;;;
 
-(defaccessor parent :parent)
-
-(defn ultimate-parent [board pos]
-  (loop [pos pos]
-    (let [p (parent board pos)]
-      (if (= p pos)
-        p
-        (recur p)))))
-
-(defn penultimate-parent [board pos]
-  (let [n (parent board pos)
-        nn (parent board n)]
-    (loop [a pos, b n, c nn]
-     (if (= b c)
-       a
-       (recur b c (parent c))))))
-
-(defn update-parent [board pos parent]
-  (assoc-in board [:positions pos :parent] parent))
-
-;;;
-
 (defaccessor color :color)
 
 (defn update-color [board pos color]
@@ -100,17 +77,17 @@
 
 ;;;
 
-(defaccessor neighbor-sum :neighbor-sum)
+(defaccessor neighbor-sum :sum)
 
-(defn calculate-neighbor-sum [board pos]
+(defn calculate-sum [board pos]
   (->> (neighbors board pos #{:empty})
     (apply +)))
 
 ;;;
 
-(defaccessor neighbor-sum-of-squares :neighbor-sum-of-squares)
+(defaccessor sum-of-squares :sum-of-squares)
 
-(defn calculate-neighbor-sum-of-squares [board pos]
+(defn calculate-sum-of-squares [board pos]
   (->> (neighbors board pos #{:empty})
     (map #(* % %))
     (apply +)))
@@ -133,6 +110,31 @@
 
 ;;;
 
+(defaccessor parent :parent)
+
+(defn ultimate-parent [board pos]
+  (loop [pos pos]
+    (let [p (parent board pos)]
+      (if (= p pos)
+        p
+        (recur p)))))
+
+(defn penultimate-parent [board pos]
+  (let [n (parent board pos)
+        nn (parent board n)]
+    (loop [a pos, b n, c nn]
+     (if (= b c)
+       a
+       (recur b c (parent c))))))
+
+(defn update-parent [board pos parent]
+  (-> board
+    (assoc-in [:positions pos :parent] parent)
+    (update-in [:positions parent :sum] #(+ % (sum board pos)))
+    (update-in [:positions parent :sum-of-squares] #(+ % (sum-of-squares board pos)))))
+
+;;;
+
 (defn add-stone [board pos stone-color]
   (let [board (-> board
                 (assoc-in [:positions pos :color] stone-color)
@@ -142,38 +144,15 @@
                          :black :black-neighbors)]
     (reduce
       (fn [board n]
-        (let [board (-> board
+        (let [p (ultimate-parent board n)
+              board (-> board
                       (update-in [:positions n :liberties] dec)
-                      (update-in [:positions n :neighbor-sum] #(- % pos))
-                      (update-in [:positions n :neighbor-sum-of-squares] #(- % (* pos pos)))
+                      (update-in [:positions p :sum] #(- % pos))
+                      (update-in [:positions p :sum-of-squares] #(- % (* pos pos)))
                       (update-in [:positions n neighbor-count] inc))
               n-color (color board n)]
-          (if (= stone-color n-color)
+          (if (and (= stone-color n-color) (not= pos p))
             (update-parent board (ultimate-parent board n) pos)
-            board)))
-      board
-      (p/neighbors (:dim board) pos))))
-
-(defn remove-stone
-  [board pos]
-  (let [pos-color (color board pos)
-        board (-> board
-                (assoc-in [:positions pos :color] :empty)
-                (update-in [:empty-positions] conj pos))
-        neighbor-count (case color
-                         :white :white-neighbors
-                         :black :black-neighbors)]
-    (reduce
-      (fn [board n]
-        (let [board (-> board
-                      (update-in [:positions n :liberties] inc)
-                      (update-in [:positions n :neighbor-sum] #(+ % pos))
-                      (update-in [:positions n :neighbor-sum-of-squares] #(+ % (* pos pos)))
-                      (update-in [:positions n neighbor-count] inc))
-              n-color (color board n)]
-          (if (= pos-color n-color)
-            (let [p (penultimate-parent board n)]
-              (update-parent board p p))
             board)))
       board
       (p/neighbors (:dim board) pos))))
