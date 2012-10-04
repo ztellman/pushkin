@@ -12,16 +12,19 @@
 
 ;;;
 
+(defn opponent [color]
+  (case color
+    :white :black
+    :black :white))
+
+;;;
+
 (defrecord Board
   [dim
-   empty-positions
    positions
+   empty-positions
    white-score
    black-score])
-
-(defmacro defaccessor [name field]
-  `(defn ~name [board# pos#]
-     (get-in board# [:positions pos# ~field])))
 
 (def empty-board
   (memoize
@@ -35,141 +38,183 @@
            :white-score 0
            :black-score 0})))))
 
-;;;
-
 (defn print-board [board]
   (let [dim (:dim board)
         cols (->> (range dim)
                (map #(char (+ (int \A) %)))
                (apply str))]
-    (println (str " " cols))
+    (println "Black:" (:black-score board))
+    (println "White:" (:white-score board))
+    (println (str "  " cols "\n"))
     (dotimes [x dim]
-      (print (inc x))
+      (print (str (inc x) " "))
       (dotimes [y dim]
         (let [c (get-in board [:positions (p/position dim x y) :color])]
           (print
             (case c
               :white "O"
               :black "X"
-              :empty " "))))
-      (println (inc x)))
-    (println (str " " cols))))
+              :empty "."))))
+      (println (str " " (inc x))))
+    (println (str "\n  " cols "\n"))))
 
 ;;;
 
-(defaccessor color :color)
+(defmacro def-accessor [name field]
+  `(defn ~name [board# pos#]
+     (get-in board# [:positions pos# ~field])))
+
+(declare parent color)
+
+(defmacro def-parent-accessor [name field]
+  `(defn ~name [board# pos#]
+     (get-in board# [:positions (parent board# pos#) ~field])))
+
+(defn neighbors
+  ([board pos]
+     (neighbors board pos (constantly true)))
+  ([board pos predicate]
+     (->> pos
+       (p/neighbors (:dim board))
+       (filter #(predicate (color board %))))))
+
+(defn group
+  ([board n]
+     (if (= :empty (color board n))
+       #{n}
+       (group board n #{})))
+  ([board n group-set]
+     (if (group-set n)
+       group-set
+       (let [group-set (conj group-set n)]
+         (reduce
+           #(group board %2 %1)
+           group-set
+           (neighbors board n #{(color board n)}))))))
+
+(defn position-range [board]
+  (let [dim (:dim board)]
+    (range (* dim dim))))
+
+;;;
+
+(def-accessor color :color)
+(def-accessor liberties :liberties)
+(def-accessor white-neighbors :white-neighbors)
+(def-accessor black-neighbors :black-neighbors)
+(def-accessor local-parent :parent)
+(def-parent-accessor neighbor-sum :neighbor-sum)
+(def-parent-accessor neighbor-sum-of-squares :neighbor-sum-of-squares)
 
 (defn update-color [board pos color]
   (assoc-in board [:positions pos :color] color))
 
-(defn neighbors [board pos predicate]
-  (->> pos
-    p/neighbors
-    (filter #(predicate (color board %)))))
-
-;;;
-
-(defaccessor liberties :liberties)
-
-(defn calculate-liberties [board pos]
-  (->> (neighbors board pos #{:empty})
-    count))
-
-;;;
-
-(defaccessor neighbor-sum :sum)
-
-(defn calculate-sum [board pos]
-  (->> (neighbors board pos #{:empty})
-    (apply +)))
-
-;;;
-
-(defaccessor sum-of-squares :sum-of-squares)
-
-(defn calculate-sum-of-squares [board pos]
-  (->> (neighbors board pos #{:empty})
-    (map #(* % %))
-    (apply +)))
-
-;;;
-
-(defaccessor white-neighbors :white-neighbors)
-
-(defn calculate-white-neighbors [board pos]
-  (->> (neighbors board pos #{:white})
-    count))
-
-;;;
-
-(defaccessor black-neighbors :black-neighbors)
-
-(defn calculate-white-neighbors [board pos]
-  (->> (neighbors board pos #{:black})
-    count))
-
-;;;
-
-(defaccessor parent :parent)
-
-(defn ultimate-parent [board pos]
+(defn parent [board pos]
   (loop [pos pos]
-    (let [p (parent board pos)]
+    (let [p (local-parent board pos)]
       (if (= p pos)
         p
         (recur p)))))
 
 (defn penultimate-parent [board pos]
-  (let [n (parent board pos)
-        nn (parent board n)]
+  (let [n (local-parent board pos)
+        nn (local-parent board n)]
     (loop [a pos, b n, c nn]
      (if (= b c)
        a
-       (recur b c (parent c))))))
+       (recur b c (local-parent board c))))))
 
 (defn update-parent [board pos parent]
   (-> board
     (assoc-in [:positions pos :parent] parent)
-    (update-in [:positions parent :sum] #(+ % (sum board pos)))
-    (update-in [:positions parent :sum-of-squares] #(+ % (sum-of-squares board pos)))))
+    (update-in [:positions parent :neighbor-sum] #(+ % (neighbor-sum board pos)))
+    (update-in [:positions parent :neighbor-sum-of-squares] #(+ % (neighbor-sum-of-squares board pos)))))
 
 ;;;
 
-(defn add-stone [board pos stone-color]
-  (let [board (-> board
-                (assoc-in [:positions pos :color] stone-color)
-                (update-in [:empty-positions] disj pos))
-        neighbor-count (case stone-color
-                         :white :white-neighbors
-                         :black :black-neighbors)]
-    (reduce
-      (fn [board n]
-        (let [p (ultimate-parent board n)
-              board (-> board
-                      (update-in [:positions n :liberties] dec)
-                      (update-in [:positions p :sum] #(- % pos))
-                      (update-in [:positions p :sum-of-squares] #(- % (* pos pos)))
-                      (update-in [:positions n neighbor-count] inc))
-              n-color (color board n)]
-          (if (and (= stone-color n-color) (not= pos p))
-            (update-parent board (ultimate-parent board n) pos)
-            board)))
-      board
-      (p/neighbors (:dim board) pos))))
+(defn calculate-group [board n]
+  (let [p (parent board n)]
+    (->> board
+      position-range
+      (filter #(= p (parent board %)))
+      set)))
+
+(defn calculate-sum-of-squares [board pos]
+  (->> pos
+    (group board)
+    (mapcat #(neighbors board % #{:empty}))
+    (map #(* % %))
+    (apply +)))
+
+(defn calculate-sum [board pos]
+  (->> pos
+    (group board)
+    (mapcat #(neighbors board % #{:empty}))
+    (apply +)))
+
+(defn calculate-liberties [board pos]
+  (->> (neighbors board pos #{:empty})
+    count))
+
+(defn calculate-black-neighbors [board pos]
+  (->> (neighbors board pos #{:black})
+    count))
+
+(defn calculate-white-neighbors [board pos]
+  (->> (neighbors board pos #{:white})
+    count))
+
+(def validations
+  [[:white-neighbors (constantly true) white-neighbors calculate-white-neighbors]
+   [:black-neighbors (constantly true) black-neighbors calculate-black-neighbors]
+   [:sum #{:white :black} neighbor-sum calculate-sum]
+   [:sum-of-squares #{:white :black} neighbor-sum-of-squares calculate-sum-of-squares]
+   [:group #{:white :black} group calculate-group]])
+
+(defn validate-positions
+  ([board]
+     (validate-positions board validations))
+  ([board validations]
+     (doseq [p (position-range board)]
+       (doseq [[field predicate lookup from-scratch] validations]
+         (try
+           (when (predicate (color board p))
+             (assert
+               (= (lookup board p) (from-scratch board p))
+               (str field " at " p ": " (lookup board p) ", " (from-scratch board p))))
+           (catch Throwable e
+             (print-board board)
+             (throw e)))))
+     board))
 
 ;;;
 
-(defn make-random-move [board color]
-  (let [ps (:empty-positions board)
-        p (nth (seq ps) (rand-int (count ps)))]
-    (add-stone board p color)))
+(defn capture? [board color n]
+  (->> (neighbors board n #{color})
+    (filter (fn [n]
+              (let [sum (neighbor-sum board n)
+                    sum-of-squares (neighbor-sum-of-squares board n)]
+                (= (* sum sum) sum-of-squares))))
+    first
+    boolean))
 
-(defn playout [dim moves]
-  (let [b (empty-board dim)]
-    (reduce
-      (fn [board _]
-        (-> board
-          (make-random-move :white)
-          (make-random-move :black)))
-      b
-      (range moves))))
+(defn possible-eye? [board n]
+  (let [num-neighbors (count (p/neighbors (:dim board) n))]
+    (or
+      (and
+        (= num-neighbors (white-neighbors board n))
+        (not (capture? board :white n))
+        :white)
+      (and
+        (= num-neighbors (black-neighbors board n))
+        (not (capture? board :black n))
+        :black))))
+
+(defn final-score [board]
+  (merge-with +
+    {:white (:white-score board)
+     :black (:black-score board)}
+    (->> (position-range board)
+      (map #(possible-eye? board %))
+      (remove false?)
+      frequencies)))

@@ -44,13 +44,16 @@
 
 (defn initial-position
   [dim pos]
-  (let [ns (neighbors dim pos)]
+  (let [neighbors (neighbors dim pos)]
     (map->Position
       {:value pos
        :color :empty
-       :liberties (count ns)
-       :neighbor-sum (apply + ns)
-       :neighbor-sum-of-squares (->> ns (map #(* % %)) (apply +))
+       :liberties (count neighbors)
+       :neighbor-sum (apply + neighbors)
+       :neighbor-sum-of-squares (->> neighbors (map #(* % %)) (apply +))
        :parent pos
        :white-neighbors 0
        :black-neighbors 0})))
+
+;;;
+
