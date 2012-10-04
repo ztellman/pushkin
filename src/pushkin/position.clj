@@ -57,3 +57,7 @@
 
 ;;;
 
+(defn position->gtp [pos dim]
+  (let [x (rem pos dim)
+        y (int (/ pos dim))]
+    (str (char (+ (int \A) x)) (inc y))))
