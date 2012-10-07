@@ -6,20 +6,22 @@
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any other, from this software.
 
-(ns pushkin.position)
+(ns pushkin.position
+  (:require
+    [clojure.string :as str]))
 
 ;;;
 
 (defn position
   "Integer position for a set of x,y coords."
   [dim x y]
-  (+ (* x dim) y))
+  (+ (* y dim) x))
 
 (defn neighbors
   "Neighboring positions for a given integer position."
-  [dim pos]
-  (let [x (int (/ pos dim))
-        y (rem pos dim)]
+  [pos dim]
+  (let [x (rem pos dim)
+        y (int (/ pos dim))]
     (concat
       (when (< 0 x)
         [(position dim (dec x) y)])
@@ -43,8 +45,8 @@
    black-neighbors])
 
 (defn initial-position
-  [dim pos]
-  (let [neighbors (neighbors dim pos)]
+  [pos dim]
+  (let [neighbors (neighbors pos dim)]
     (map->Position
       {:value pos
        :color :empty
@@ -55,9 +57,34 @@
        :white-neighbors 0
        :black-neighbors 0})))
 
+(defn opponent [color]
+  (case color
+    :white :black
+    :black :white))
+
 ;;;
 
 (defn position->gtp [pos dim]
-  (let [x (rem pos dim)
-        y (int (/ pos dim))]
-    (str (char (+ (int \A) x)) (inc y))))
+  (if (= :pass pos)
+    "PASS"
+    (let [x (rem pos dim)
+          x (if (<= 8 x)
+              (inc x)
+              x)
+          y (int (/ pos dim))]
+      (str
+        (char (+ (int \A) x))
+        (inc y)))))
+
+(defn gtp->position [pos dim]
+  (let [pos (str/lower-case pos)]
+    (if (= "pass" pos)
+      :pass
+      (let [[col & row] pos]
+        (position dim
+          (let [val (- (int col) (int \a))]
+            (cond
+              (< val 8) val
+              (= val 8) (throw (Exception. "invalid coordinate"))
+              (> val 8) (dec val)))
+          (dec (Integer/parseInt (apply str row))))))))

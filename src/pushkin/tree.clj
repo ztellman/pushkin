@@ -8,17 +8,18 @@
 
 (ns pushkin.tree
   (:require
+    [pushkin.position :as p]
     [pushkin.simulator :as s]
     [pushkin.board :as b]))
 
 (defprotocol INode
-  (move [_])
   (score [_])
+  (visits [_])
   (add-score [_ score])
   (add-visit [_])
-  (visits [_])
   (playout [_])
   (leaf? [_])
+  (selected-move [_])
   (select-move [_ move])
   (best-child [_]))
 
@@ -36,6 +37,8 @@
     (* (rand) epsilon)))
 
 
+(def curr-board nil)
+
 (defrecord Node
   [last-move
    color
@@ -50,25 +53,36 @@
   (visits [_] @visits)
   (add-score [_ val] (swap! score + val))
   (add-visit [_] (swap! visits inc))
-  (playout [_] (s/run-playouts 100 board color (= :pass last-move)))
+  (playout [_] (s/run-playouts 1e2 board color (= :pass last-move)))
   (leaf? [_] (zero? @visits))
   (select-move [_ move]
+    (def curr-board board)
+    (when-not (contains? @@children move)
+      (throw (Exception. (str "selecting a supposedly invalid move " (p/position->gtp move (:dim board))))))
     (swap! @children #(select-keys % [move])))
   (best-child [this]
     (let [children @@children]
-      (if (= 1 (count children))
+      (cond
+        (and (= :black color) (= :pass last-move))
+        (children :pass)
+
+        (= 1 (count children))
         (->> children first val)
-        (->> children
-          vals
-          (sort-by #(uct-value this %))
-          last)))))
+
+        :else
+        (let [children (->> children
+                         vals
+                         (sort-by #(uct-value this %)))]
+          (if (= :black color)
+            (last children)
+            (first children)))))))
 
 (defn node
   [last-move board color]
   (let [moves (->> board
                 :empty-positions
-                (remove #(b/eye-type board %))
-                (remove #(= :ko (b/capture-type board color %))))
+                (remove #(b/ko? board color %))
+                (remove #(b/suicide? board color %)))
         moves (conj moves :pass)]
     (map->Node
       {:last-move last-move
@@ -81,8 +95,8 @@
                      (map
                        (fn [move]
                          (if (= :pass move)
-                           (node move board (b/opponent color))
-                           (node move (s/add-stone board move color) (b/opponent color))))
+                           (node move board (p/opponent color))
+                           (node move (b/add-stone board move color) (p/opponent color))))
                        moves))
                    atom
                    delay)})))
@@ -90,10 +104,33 @@
 (defn starting-node [dim]
   (node nil (b/empty-board dim) :black))
 
-(defn traverse [node]
-  (let [score (if (leaf? node)
-                (playout node)
-                (->> node best-child traverse))]
-    (add-score node score)
-    (add-visit node)
-    score))
+(defn traverse
+  [node]
+  (if-not node
+    0
+    (let [score (if (leaf? node)
+                  (do
+                    (playout node))
+                  (let [child (best-child node)]
+                    (traverse child)))]
+      (add-score node score)
+      (add-visit node)
+      score)))
+
+(defn move-seq [node]
+  (lazy-seq
+    (let [child (best-child node)
+          move (:last-move child)]
+      (select-move node move)
+      (cons move (move-seq child)))))
+
+(defn node-seq [node]
+  (iterate best-child node))
+
+(defn gen-move [node depth]
+  (nth (move-seq node) depth))
+
+(defn set-move [node depth move]
+  (select-move
+    (nth (node-seq node) depth)
+    move))

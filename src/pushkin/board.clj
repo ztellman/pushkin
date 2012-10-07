@@ -13,13 +13,6 @@
 
 ;;;
 
-(defn opponent [color]
-  (case color
-    :white :black
-    :black :white))
-
-;;;
-
 (defrecord Board
   [dim
    positions
@@ -39,29 +32,30 @@
           {:dim dim
            :eyes #{}
            :empty-positions (set ps)
-           :positions (vec (map #(p/initial-position dim %) ps))
+           :positions (vec (map #(p/initial-position % dim) ps))
            :white-score 0
            :black-score 0
            :hash (h/zobrist-hash)})))))
 
 (defn print-board [board]
   (let [dim (:dim board)
-        cols (->> (range dim)
+        cols (->> (range (inc dim))
                (map #(char (+ (int \A) %)))
+               (remove #{\I})
                (apply str))]
     (println "Black:" (:black-score board))
     (println "White:" (:white-score board))
     (println (str "  " cols "\n"))
-    (dotimes [x dim]
-      (print (str (inc x) " "))
-      (dotimes [y dim]
+    (doseq [y (reverse (range dim))]
+      (print (str (inc y) " "))
+      (doseq [x (range dim)]
         (let [c (get-in board [:positions (p/position dim x y) :color])]
           (print
             (case c
               :white "O"
               :black "X"
               :empty "."))))
-      (println (str " " (inc x))))
+      (println (str " " (inc y))))
     (println (str "\n  " cols "\n"))))
 
 (defmethod print-method Board [o ^java.io.Writer w]
@@ -83,8 +77,7 @@
   ([board pos]
      (neighbors board pos (constantly true)))
   ([board pos predicate]
-     (->> pos
-       (p/neighbors (:dim board))
+     (->> (p/neighbors pos (:dim board))
        (filter #(predicate (color board %))))))
 
 (defn group
@@ -140,106 +133,135 @@
 
 ;;;
 
-(defn calculate-group [board n]
-  (let [p (parent board n)]
-    (->> board
-      position-range
-      (filter #(= p (parent board %)))
-      set)))
+(defn update-parent [board pos parent]
+  (-> board
+    (update-in [:positions parent :liberties] #(+ % (liberties board pos)))
+    (update-in [:positions parent :neighbor-sum] #(+ % (neighbor-sum board pos)))
+    (update-in [:positions parent :neighbor-sum-of-squares] #(+ % (neighbor-sum-of-squares board pos)))
+    (assoc-in [:positions pos :parent] parent)))
 
-(defn calculate-sum-of-squares [board pos]
-  (->> pos
-    (group board)
-    (mapcat #(neighbors board % #{:empty}))
-    (map #(* % %))
-    (apply +)))
+(defn remove-stone [board pos]
+  (let [stone-color (color board pos)
+        board (-> board
+                (assoc-in [:positions pos :color] :empty)
+                (assoc-in [:positions pos :parent] pos)
+                (update-in [:empty-positions] conj pos)
+                (update-in [:hash] #(h/update-hash % pos stone-color)))
+        neighbor-count (case stone-color
+                         :white :white-neighbors
+                         :black :black-neighbors)]
+    (reduce
+      (fn [board n]
+        (let [p (parent board n)
+              board (-> board
+                      (update-in [:positions p :liberties] inc)
+                      (update-in [:positions p :neighbor-sum] #(+ % pos))
+                      (update-in [:positions p :neighbor-sum-of-squares] #(+ % (* pos pos)))
+                      (update-in [:positions n neighbor-count] dec))
+              n-color (color board n)]
+          (if (and (= stone-color n-color) (= pos p))
+            (assoc-in board [:positions n :parent] (penultimate-parent board n))
+            board)))
+      board
+      (p/neighbors pos (:dim board)))))
 
-(defn calculate-sum [board pos]
-  (->> pos
-    (group board)
-    (mapcat #(neighbors board % #{:empty}))
-    (apply +)))
+(defn clear-group [board pos]
+  (let [g (group board pos)
+        score (case (color board pos)
+                :white :black-score
+                :black :white-score)]
+    (reduce
+      #(remove-stone %1 %2)
+      (update-in board [score] + (count g))
+      g)))
 
-(defn calculate-liberties [board pos]
-  (->> pos
-    (group board)
-    (mapcat #(neighbors board % #{:empty}))
-    count))
-
-(defn calculate-black-neighbors [board pos]
-  (->> (neighbors board pos #{:black})
-    count))
-
-(defn calculate-white-neighbors [board pos]
-  (->> (neighbors board pos #{:white})
-    count))
-
-(defn calculate-atari? [board pos]
-  (->> pos
-    (group board)
-    (mapcat #(neighbors board % #{:empty}))
-    set
-    count
-    (= 1)))
-
-(def validations
-  [[:white-neighbors (constantly true) white-neighbors calculate-white-neighbors]
-   [:black-neighbors (constantly true) black-neighbors calculate-black-neighbors]
-   [:sum #{:white :black} neighbor-sum calculate-sum]
-   [:sum-of-squares #{:white :black} neighbor-sum-of-squares calculate-sum-of-squares]
-   [:group #{:white :black} group calculate-group]
-   [:liberties #{:white :black} liberties calculate-liberties]
-   [:atari #{:white :black} atari? calculate-atari?]])
-
-(defn validate-positions
-  ([board]
-     (validate-positions board validations))
-  ([board validations]
-     (doseq [p (position-range board)]
-       (doseq [[field predicate lookup from-scratch] validations]
-         (try
-           (when (predicate (color board p))
-             (assert
-               (= (lookup board p) (from-scratch board p))
-               (str field " at " (p/position->gtp p (:dim board)) ": " (lookup board p) ", " (from-scratch board p))))
-           (catch Throwable e
-             (print-board board)
-             (throw e)))))
-     board))
+(defn add-stone [board pos stone-color]
+  (let [dim (:dim board)
+        board (-> board
+                (assoc-in [:positions pos :neighbor-sum] 0)
+                (assoc-in [:positions pos :neighbor-sum-of-squares] 0)
+                (assoc-in [:positions pos :liberties] 0)
+                (assoc-in [:positions pos :color] stone-color)
+                (update-in [:empty-positions] disj pos)
+                (update-in [:hash] #(-> % h/rotate-hashes (h/update-hash pos stone-color))))
+        neighbor-count (case stone-color
+                         :white :white-neighbors
+                         :black :black-neighbors)
+        board (reduce
+                (fn [board n]
+                  (let [np (parent board n)
+                        n-color (color board n)
+                        board (update-in board [:positions n neighbor-count] inc)
+                        board (if (not= :empty n-color)
+                                (-> board
+                                  (update-in [:positions np :liberties] dec)
+                                  (update-in [:positions np :neighbor-sum] #(- % pos))
+                                  (update-in [:positions np :neighbor-sum-of-squares] #(- % (* pos pos))))
+                                (-> board
+                                  (update-in [:positions pos :liberties] inc)
+                                  (update-in [:positions pos :neighbor-sum] #(+ % n))
+                                  (update-in [:positions pos :neighbor-sum-of-squares] #(+ % (* n n)))))
+                        board (if (and (= stone-color n-color) (not= pos np))
+                                (update-parent board (parent board n) pos)
+                                board)]
+                    board))
+                board
+                (p/neighbors pos (:dim board)))
+        board (reduce
+                (fn [board n]
+                  (let [n-color (color board n)]
+                    (if (and (not= :empty n-color) (zero? (liberties board n)))
+                      (clear-group board n)
+                      board)))
+                board
+                (neighbors board pos #{(p/opponent stone-color)}))]
+    board))
 
 ;;;
 
-(defn capture-type [board color p]
-  (when-let [n (->> (neighbors board p #{(opponent color)})
-                 (filter #(atari? board %))
-                 first)]
-    (if (and (= n (parent board n))
-          (-> board
-            :hash
-            h/rotate-hashes
-            (h/update-hash p color)
-            (h/update-hash n (opponent color))
-            h/cycle?))
-      :ko
-      :valid)))
+(defn capture? [board color p]
+  (->> (neighbors board p #{(p/opponent color)})
+    (filter #(atari? board %))
+    first))
 
-(defn eye-type [board n]
-  (let [num-neighbors (count (p/neighbors (:dim board) n))]
+(defn eye? [board p]
+  (let [num-neighbors (count (p/neighbors p (:dim board)))]
     (or
       (and
-        (= num-neighbors (white-neighbors board n))
-        (not (capture-type board :black n))
+        (= num-neighbors (white-neighbors board p))
+        (not (capture? board :black p))
         :white)
       (and
-        (= num-neighbors (black-neighbors board n))
-        (not (capture-type board :white n))
+        (= num-neighbors (black-neighbors board p))
+        (not (capture? board :white p))
         :black))))
+
+(defn ko? [board color p]
+  (when-let [n (capture? board color p)]
+    (and
+      (= n (parent board n))
+      (-> board
+        :hash
+        h/rotate-hashes
+        (h/update-hash p color)
+        (h/update-hash n (p/opponent color))
+        h/cycle?))))
+
+(defn suicide? [board color p]
+  (let [num-neighbors (count (p/neighbors p (:dim board)))
+        same-neighbors (neighbors board p #{color})
+        diff-neighbors (neighbors board p #{(p/opponent color)})]
+    (and
+      (= num-neighbors (+ (count same-neighbors) (count diff-neighbors)))
+      (not (some #(atari? board %) diff-neighbors))
+      (every? #(atari? board %) same-neighbors))))
 
 (defn final-score [board]
   (merge-with +
     {:white (:white-score board)
      :black (:black-score board)}
     (->> (position-range board)
-      (map #(eye-type board %))
+      (filter #(= :empty (color board %)))
+      (map #(eye? board %))
       (remove false?)
       frequencies)))
