@@ -7,55 +7,178 @@
 ;;   You must not remove this notice, or any other, from this software.
 
 (ns pushkin.position
+  (:use
+    [potemkin :only (unify-gensyms)]
+    [clojure walk]
+    [useful.datatypes])
   (:require
-    [clojure.string :as str]))
+    [clojure.string :as str])
+  (:import
+    [java.lang.reflect
+     Array]))
 
 ;;;
 
-(defn position
+(defn coord->position
   "Integer position for a set of x,y coords."
   [dim x y]
   (+ (* y dim) x))
 
-(defn neighbors
-  "Neighboring positions for a given integer position."
-  [pos dim]
+(defn calculate-neighbors [pos dim]
   (let [x (rem pos dim)
         y (int (/ pos dim))]
     (concat
       (when (< 0 x)
-        [(position dim (dec x) y)])
+        [(coord->position dim (dec x) y)])
       (when (< x (dec dim))
-        [(position dim (inc x) y)])
+        [(coord->position dim (inc x) y)])
       (when (< 0 y)
-        [(position dim x (dec y))])
+        [(coord->position dim x (dec y))])
       (when (< y (dec dim))
-        [(position dim x (inc y))]))))
+        [(coord->position dim x (inc y))]))))
+
+(defn create-neighbor-array [dim]
+  (let [ary (make-array (Class/forName "[J") (* dim dim))]
+    (dotimes [i (* dim dim)]
+      (let [neighbors (into-array Long/TYPE (calculate-neighbors i dim))]
+        (aset ary i neighbors)))
+    ary))
+
+(def neighbors-2x2 (create-neighbor-array 2))
+(def neighbors-9x9 (create-neighbor-array 9))
+(def neighbors-13x13 (create-neighbor-array 13))
+(def neighbors-19x19 (create-neighbor-array 19))
+
+(defn neighbors [^long pos ^long dim]
+  (let [ary (case dim
+              2 neighbors-2x2
+              9 neighbors-9x9
+              13 neighbors-13x13
+              19 neighbors-19x19)]
+    (aget ^"[[J" ary pos)))
 
 ;;;
 
-(defrecord Position
-  [value
-   color
-   liberties
-   neighbor-sum
-   neighbor-sum-of-squares
-   parent
-   white-neighbors
-   black-neighbors])
+(definterface IPosition
+  (clone [])
+  (color [])
+  (set_color [c])
+  (^long liberties [])
+  (add_liberties [^long n])
+  (reset_liberties [])
+  (^long neighbor_sum [])
+  (add_neighbor_sum [^long n])
+  (reset_neighbor_sum [])
+  (^long neighbor_sum_of_squares [])
+  (add_neighbor_sum_of_squares [^long n])
+  (reset_neighbor_sum_of_squares [])
+  (^long parent [])
+  (set_parent [^long n])
+  (^long white_neighbors [])
+  (add_white_neighbors [^long n])
+  (^long black_neighbors [])
+  (add_black_neighbors [^long n]))
 
-(defn initial-position
-  [pos dim]
-  (let [neighbors (neighbors pos dim)]
-    (map->Position
-      {:value pos
-       :color :empty
-       :liberties (count neighbors)
-       :neighbor-sum (apply + neighbors)
-       :neighbor-sum-of-squares (->> neighbors (map #(* % %)) (apply +))
-       :parent pos
-       :white-neighbors 0
-       :black-neighbors 0})))
+(defmacro += [field n]
+  `(do
+     (set! ~field (long (unchecked-add-int (long ~field) (long ~n))))
+     nil))
+
+(deftype Position
+  [^long value
+   ^:unsynchronized-mutable color
+   ^:unsynchronized-mutable ^long liberties
+   ^:unsynchronized-mutable ^long neighbor-sum
+   ^:unsynchronized-mutable ^long neighbor-sum-of-squares
+   ^:unsynchronized-mutable ^long parent
+   ^:unsynchronized-mutable ^long white-neighbors
+   ^:unsynchronized-mutable ^long black-neighbors]
+
+  IPosition
+
+  (clone [_]
+    (Position.
+      value
+      color
+      liberties
+      neighbor-sum
+      neighbor-sum-of-squares
+      parent
+      white-neighbors
+      black-neighbors))
+
+  (color [_] color)
+  (set_color [_ c] (set! color c) nil)
+
+  (^long liberties [_] liberties)
+  (add_liberties [_ ^long n] (+= liberties n))
+  (reset_liberties [_] (set! liberties 0) nil)
+
+  (^long neighbor_sum [_] neighbor-sum)
+  (add_neighbor_sum [_ ^long n] (+= neighbor-sum n))
+  (reset_neighbor_sum [_] (set! neighbor-sum 0) nil)
+
+  (^long neighbor_sum_of_squares [_] neighbor-sum-of-squares)
+  (add_neighbor_sum_of_squares [_ ^long n] (+= neighbor-sum-of-squares n))
+  (reset_neighbor_sum_of_squares [_] (set! neighbor-sum-of-squares 0) nil)
+
+  (^long parent [_] parent)
+  (set_parent [_ ^long n] (set! parent (long n)) nil)
+
+  (^long white_neighbors [_] white-neighbors)
+  (add_white_neighbors [_ ^long n] (+= white-neighbors n))
+
+  (^long black_neighbors [_] black-neighbors)
+  (add_black_neighbors [_ ^long n] (+= black-neighbors n)))
+
+(defn initial-positions [dim]
+  (let [ary (make-array Position (* dim dim))]
+    (dotimes [pos (* dim dim)]
+      (let [neighbors (neighbors pos dim)]
+        (aset ary pos
+          (Position.
+            pos
+            :empty
+            (count neighbors)
+            (apply + neighbors)
+            (->> neighbors (map #(* % %)) (apply +))
+            pos
+            0
+            0))))
+    ary))
+
+(defmacro position [ary n]
+  (with-meta
+    `(aget ~(with-meta ary {:tag "objects"}) ~n)
+    {:tag "pushkin.position.Position"}))
+
+(defn clone-positions [^objects ary]
+  (let [cnt (Array/getLength ary)
+        ^objects copy (make-array Position cnt)]
+    (dotimes [i cnt]
+      (let [^Position p (aget ary i)]
+        (aset copy i (.clone p))))
+    copy))
+
+;;;
+
+(defn- unrolled-action [neighbor body index]
+  `(let [~neighbor (pushkin.position/position positions## (aget neighbors## ~index))]
+     ~@body))
+
+(defmacro foreach-neighbor [dim positions [pos neighbor] & body]
+  (unify-gensyms
+    `(let [^objects positions## ~positions
+           ^"[J" neighbors## (neighbors ~pos ~dim)]
+       (case (long (Array/getLength neighbors##))
+         
+           2 (do ~@(map #(unrolled-action neighbor body %) (range 2)))
+         
+           3 (do ~@(map #(unrolled-action neighbor body %) (range 3)))
+         
+           4 (do ~@(map #(unrolled-action neighbor body %) (range 4)))))))
+
+;;;
 
 (defn opponent [color]
   (case color
@@ -81,7 +204,7 @@
     (if (= "pass" pos)
       :pass
       (let [[col & row] pos]
-        (position dim
+        (coord->position dim
           (let [val (- (int col) (int \a))]
             (cond
               (< val 8) val

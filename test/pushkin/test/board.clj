@@ -17,55 +17,58 @@
 
 ;; brute force implementations of board lookups, for validation
 
+(def neighbors b/neighbors)
+
 (defn group [board n]
   (let [p (b/parent board n)]
-    (->> board
-      b/position-range
+    (->> (.positions board)
       (filter #(= p (b/parent board %)))
       set)))
 
 (defn neighbor-sum-of-squares [board pos]
   (->> pos
     (group board)
-    (mapcat #(b/neighbors board % #{:empty}))
+    (mapcat #(neighbors board % #{:empty}))
+    (map #(.value %))
     (map #(* % %))
     (apply +)))
 
 (defn neighbor-sum [board pos]
   (->> pos
     (group board)
-    (mapcat #(b/neighbors board % #{:empty}))
+    (mapcat #(neighbors board % #{:empty}))
+    (map #(.value %))
     (apply +)))
 
 (defn liberties [board pos]
   (->> pos
-    (b/group board)
-    (mapcat #(b/neighbors board % #{:empty}))
+    (group board)
+    (mapcat #(neighbors board % #{:empty}))
     count))
 
 (defn black-neighbors [board pos]
-  (->> (b/neighbors board pos #{:black})
+  (->> (neighbors board pos #{:black})
     count))
 
 (defn white-neighbors [board pos]
-  (->> (b/neighbors board pos #{:white})
+  (->> (neighbors board pos #{:white})
     count))
 
 (defn atari? [board pos]
   (->> pos
     (group board)
-    (mapcat #(b/neighbors board % #{:empty}))
+    (mapcat #(neighbors board % #{:empty}))
     set
     count
     (= 1)))
 
 (defn capture? [board color p]
-  (->> (b/neighbors board p #{(p/opponent color)})
+  (->> (neighbors board p #{(p/opponent color)})
     (filter #(atari? board %))
     first))
 
 (defn eye? [board p]
-  (let [num-neighbors (count (p/neighbors p (:dim board)))]
+  (let [num-neighbors (count (neighbors board p))]
     (or
       (and
         (= num-neighbors (white-neighbors board p))
@@ -80,30 +83,30 @@
   (when-let [n (capture? board color p)]
     (and
       (= n (b/parent board n))
-      (-> board
-        :hash
-        h/rotate-hashes
-        (h/update-hash p color)
-        (h/update-hash n (p/opponent color))
-        h/cycle?))))
+      (case color
+        :white (h/ko? (.hash board) p n)
+        :black (h/ko? (.hash board) n p)))))
 
 (defn suicide? [board color p]
-  (let [num-neighbors (count (p/neighbors p (:dim board)))
-        same-neighbors (b/neighbors board p #{color})
-        diff-neighbors (b/neighbors board p #{(p/opponent color)})]
+  (let [num-neighbors (count (neighbors board p))
+        same-neighbors (neighbors board p #{color})
+        diff-neighbors (neighbors board p #{(p/opponent color)})]
     (and
       (= num-neighbors (+ (count same-neighbors) (count diff-neighbors)))
       (not (some #(atari? board %) diff-neighbors))
       (every? #(atari? board %) same-neighbors))))
 
-(def board-validations
+(def field-validations
   [[:white-neighbors (constantly true) b/white-neighbors white-neighbors]
-   [:black-neighbors (constantly true) b/black-neighbors black-neighbors]
-   [:sum #{:white :black} b/neighbor-sum neighbor-sum]
-   [:sum-of-squares #{:white :black} b/neighbor-sum-of-squares neighbor-sum-of-squares]
-   [:group #{:white :black} b/group group]
-   [:liberties #{:white :black} b/liberties liberties]
-   [:atari #{:white :black} b/atari? atari?]
+   [:black-neighbors (constantly true) b/black-neighbors black-neighbors]])
+
+(def parent-field-validations
+  [[:sum (constantly true) b/neighbor-sum neighbor-sum]
+   [:sum-of-squares (constantly true) b/neighbor-sum-of-squares neighbor-sum-of-squares]
+   [:liberties (constantly true) b/liberties liberties]])
+
+(def board-validations
+  [[:atari #{:white :black} b/atari? atari?]
    [:eye #{:white :black} b/eye? eye?]])
 
 (def move-validations
@@ -113,27 +116,38 @@
 
 (defn validate-board [board]
   (try
-    (doseq [p (b/position-range board)]
+    (doseq [p (.positions board)]
 
-      (let [coord (p/position->gtp p (:dim board))]
+      (let [coord (p/position->gtp (.value p) (b/dim board))]
+
+        ;; field validations
+        (doseq [[field predicate lookup from-scratch] field-validations]
+          (when (predicate (b/color p))
+            (let [expected (from-scratch board p)
+                  actual (lookup p)]
+              (is (= expected actual) (str field " at " coord)))))
+
+        ;; parent field validations
+        (doseq [[field predicate lookup from-scratch] parent-field-validations]
+          (when (predicate (b/color p))
+            (let [expected (from-scratch board p)
+                  actual (lookup (b/parent board p))]
+              (is (= expected actual) (str field " at " coord)))))
 
         ;; board validations
         (doseq [[field predicate lookup from-scratch] board-validations]
-          (when (predicate (b/color board p))
+          (when (predicate (b/color p))
             (let [expected (from-scratch board p)
                   actual (lookup board p)]
-              (is
-                (= expected actual)
-                (str field " at " coord ": " actual ", " expected)))))
+              (is (= expected actual) (str field " at " coord)))))
 
         ;; move validations
         (doseq [[field lookup from-scratch] move-validations]
-          (doseq [color [:black :white]]
-            (let [expected (from-scratch board color p)
-                  actual (lookup board color p)]
-              (is
-                (= expected actual)
-                (str field " at " coord ": " actual ", " expected)))))))
+          (when (= :empty (b/color p))
+            (doseq [color [:black :white]]
+              (let [expected (from-scratch board color p)
+                    actual (lookup board color p)]
+                (is (= expected actual) (str field " at " coord))))))))
 
     (catch Exception e
       (b/print-board board)
@@ -141,10 +155,24 @@
 
 ;;;
 
+(deftest ^:benchmark benchmark-accessors
+  (let [board (b/empty-board 9)
+        pos (b/position board 42)]
+    (long-bench "get color"
+      (b/color pos))
+    (long-bench "set color"
+      (b/set-color pos :white))
+    (long-bench "get liberties"
+      (b/liberties pos))
+    (long-bench "add liberties"
+      (b/add-liberties pos 1))
+    (long-bench "reset liberties"
+      (b/reset-liberties pos))))
+
 (deftest ^:benchmark benchmark-add-remove-stone
-  (let [board (b/empty-board 9)]
-    (bench "add stone, then remove"
-      (let [pos (rand-int 81)]
-        (-> board
-          (b/add-stone pos :black)
-          (b/remove-stone pos))))))
+  (let [board (b/empty-board 9)
+        pos (b/position board 42)]
+    (long-bench "add stone, then remove"
+      (b/add-stone board pos :black)
+      (b/remove-stone board pos))))
+

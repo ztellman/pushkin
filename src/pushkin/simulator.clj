@@ -16,21 +16,24 @@
 
 (defn random-move [board positions color]
   (when-not (empty? positions)
-    (let [p (nth (seq positions) (rand-int (count positions)))]
+    (let [p (b/position board (nth (seq positions) (rand-int (count positions))))]
       (if (and
             (not (b/eye? board p))
             (not (b/suicide? board color p))
             (not (b/ko? board color p)))
         p
-        (random-move board (disj positions p) color)))))
+        (random-move board (disj positions (.value p)) color)))))
 
 (defn playout-game [board color pass?]
-  (loop [player color, pass? pass?, board board]
-    (if-let [move (random-move board (:empty-positions board) player)]
-      (recur (p/opponent player) false (b/add-stone board move player))
-      (if pass?
-        (b/final-score board)
-        (recur (p/opponent player) true board)))))
+  (let [board (.clone board)]
+    (loop [player color, pass? pass?]
+      (if-let [move (random-move board (b/available-moves board) player)]
+        (do
+          (b/add-stone board move player)
+          (recur (p/opponent player) false))
+        (if pass?
+          (b/final-score board)
+          (recur (p/opponent player) true))))))
 
 (defn run-playouts [n board color pass?]
   (->> (range n)

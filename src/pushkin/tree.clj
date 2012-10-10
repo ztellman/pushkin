@@ -53,12 +53,14 @@
   (visits [_] @visits)
   (add-score [_ val] (swap! score + val))
   (add-visit [_] (swap! visits inc))
-  (playout [_] (s/run-playouts 1e2 board color (= :pass last-move)))
+  (playout [_] (s/run-playouts 1e2 (.clone board) color (= :pass last-move)))
   (leaf? [_] (zero? @visits))
   (select-move [_ move]
     (def curr-board board)
     (when-not (contains? @@children move)
       (throw (Exception. (str "selecting a supposedly invalid move " (p/position->gtp move (:dim board))))))
+    (when (> (count @@children) 1)
+      (b/print-board (:board (@@children move))))
     (swap! @children #(select-keys % [move])))
   (best-child [this]
     (let [children @@children]
@@ -80,9 +82,9 @@
 (defn node
   [last-move board color]
   (let [moves (->> board
-                :empty-positions
-                (remove #(b/ko? board color %))
-                (remove #(b/suicide? board color %)))
+                b/available-moves
+                (remove #(b/ko? board color (b/position board %)))
+                (remove #(b/suicide? board color (b/position board %))))
         moves (conj moves :pass)]
     (map->Node
       {:last-move last-move
@@ -96,7 +98,10 @@
                        (fn [move]
                          (if (= :pass move)
                            (node move board (p/opponent color))
-                           (node move (b/add-stone board move color) (p/opponent color))))
+                           (node move (let [board (.clone board)]
+                                        (b/add-stone board (b/position board move) color)
+                                        board)
+                             (p/opponent color))))
                        moves))
                    atom
                    delay)})))

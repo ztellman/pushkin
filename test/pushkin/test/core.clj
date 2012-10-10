@@ -9,6 +9,13 @@
        (do ~@body)
        :reduce-with #(and %1 %2))))
 
+(defmacro long-bench [name & body]
+  `(do
+     (println "\n-----\n" ~name "\n-----\n")
+     (criterium.core/bench
+       (do ~@body)
+       :reduce-with #(and %1 %2))))
+
 (defn num-cores []
   (.availableProcessors (Runtime/getRuntime)))
 

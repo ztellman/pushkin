@@ -28,21 +28,30 @@
         [gnugo-winner gnugo-score] (duel/final-score moves {:boardsize (:dim board)})
         score-by-color {:white (- white-score black-score)
                         :black (- black-score white-score)}]
-    (if-not gnugo-winner
+    (if-not (#{:black :white} gnugo-winner)
       (is (= 0.0 (double (:black score-by-color))))
-      (is (= gnugo-score (double (score-by-color gnugo-winner)))))))
+      (is (= gnugo-score (double (score-by-color gnugo-winner)))
+        (with-out-str (b/print-board board))))))
 
 (defn run-playout-validation [dim]
-  (loop [player :black, pass? false, board (b/empty-board dim), moves []]
-    (bt/validate-board board)
-    (if-let [move (s/random-move board (:empty-positions board) player)]
-      (let [coord (p/position->gtp move dim)]
-        (is (valid-move? board player move))
-        (recur (p/opponent player) false (b/add-stone board move player) (conj moves coord)))
-      (if pass?
-        (validate-score board moves)
-        (recur (p/opponent player) true board (conj moves "pass"))))))
+  (let [board (b/empty-board dim)]
+    (loop [player :black, pass? false, moves []]
+      (bt/validate-board board)
+      (if-let [move (s/random-move board (b/available-moves board) player)]
+        (let [coord (p/position->gtp (.value move) dim)]
+          (is (valid-move? board player move))
+          (b/add-stone board move player)
+          (recur (p/opponent player) false (conj moves coord)))
+        (if pass?
+          (validate-score board moves)
+          (recur (p/opponent player) true (conj moves "pass")))))))
+
+(deftest ^:benchmark benchmark-playout
+  (let [board (b/empty-board 9)]
+    (bench "random playout"
+      (s/playout-game (.clone board) :black false))))
 
 (deftest ^:stress validate-playouts
+  (println "\nvalidating playouts...\n")
   (dotimes-p [_ 1e2]
-    (time (run-playout-validation))))
+    (run-playout-validation 9)))

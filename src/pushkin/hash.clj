@@ -7,48 +7,67 @@
 ;;   You must not remove this notice, or any other, from this software.
 
 (ns pushkin.hash
+  (:require
+    [pushkin.position])
   (:import
     [java.math
      BigInteger]
     [java.util
-     Random]))
+     BitSet
+     Random]
+    [pushkin.position
+     Position]))
 
 (def hash-bits 128)
 
-(defn bigint-xor [^BigInteger a ^BigInteger b]
-  (.xor a b))
+(defn random-bitset [^Random rng size]
+  (let [bigint (BigInteger. size rng)
+        bitset (BitSet. size)]
+    (dotimes [i size]
+      (.set bitset i (.testBit bigint i)))
+    bitset))
 
-(let [rnd (Random.)]
-  (def black-hashes (vec (repeatedly 361 #(BigInteger. hash-bits rnd))))
-  (def white-hashes (vec (repeatedly 361 #(BigInteger. hash-bits rnd))))
-  (def initial (BigInteger/valueOf 0)))
+(defn empty-bitset [size]
+  (BitSet. size))
+
+(let [rng (Random.)]
+  (def black-hashes (into-array BitSet (repeatedly 361 #(random-bitset rng hash-bits))))
+  (def white-hashes (into-array BitSet (repeatedly 361 #(random-bitset rng hash-bits)))))
+
+(defn ^BitSet move-hash [color ^long pos]
+  (case color
+    :black (aget ^objects black-hashes pos)
+    :white (aget ^objects white-hashes pos)))
 
 (defprotocol ZobristHash
-  (rotate-hashes [_])
-  (update-hash [_ position color])
-  (cycle? [_]))
+  (clone [_])
+  (rotate [_])
+  (toggle [_ color pos])
+  (ko? [_ white-stone black-stone]))
 
 (defn zobrist-hash
   ([]
-     (zobrist-hash [initial initial initial]))
-  ([hashes]
-     (let [update #(let [[a b c] hashes]
-                     [(bigint-xor a %) b c])]
-       (reify
-
-         clojure.lang.IDeref
-         (deref [_] (first hashes))
-
-         ZobristHash
-         (rotate-hashes [this]
-           (let [[a b c] hashes]
-             (zobrist-hash [a a b])))
-         (update-hash [this position color]
-           (zobrist-hash
-             (case color
-               :white (update (nth white-hashes position))
-               :black (update (nth black-hashes position)))))
-         (cycle? [_]
-           (let [[a _ c] hashes]
-             (= a c)))))))
+     (zobrist-hash
+       (into-array BitSet
+         [(empty-bitset hash-bits) (empty-bitset hash-bits)])))
+  ([^objects hashes]
+     (reify ZobristHash
+       (clone [_]
+         (zobrist-hash
+           (amap hashes idx ret (.clone ^BitSet (aget hashes idx)))))
+       (rotate [_]
+         (aset hashes 1 (.clone ^BitSet (aget hashes 0)))
+         nil)
+       (toggle [_ pos color]
+         (let [pos (.value ^Position pos)]
+           (.xor ^BitSet (aget hashes 0) (move-hash color pos)))
+         nil)
+       (ko? [this white-stone black-stone]
+         (try
+           (toggle this white-stone :white)
+           (toggle this black-stone :black)
+           (= (aget hashes 0) (aget hashes 1))
+           (finally
+             (toggle this white-stone :white)
+             (toggle this black-stone :black)))))))
 
