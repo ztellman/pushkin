@@ -8,47 +8,56 @@
 
 (ns pushkin.board
   (:use
+    [pushkin core]
     [useful.datatypes])
   (:require
+    [useful.state :as state]
     [pushkin.hash :as h]
     [pushkin.position :as p])
   (:import
+    [java.util
+     BitSet
+     LinkedList]
+    [java.util.concurrent.atomic
+     AtomicReference
+     AtomicInteger]
     [pushkin.position
      Position]))
 
 ;;;
 
-(definterface IBoard
-  (clone [])
-  (^long white_score [])
-  (^long add_white_score [^long n])
-  (^long black_score [])
-  (^long add_black_score [^long n]))
+(defprotocol IBoard
+  (add-white-score [_ n])
+  (white-score [_])
+  (add-black-score [_ n])
+  (black-score [_]))
 
-(deftype Board
+(defrecord Board
   [^long dim
    ^objects positions
-   ^:unsynchronized-mutable ^long white-score
-   ^:unsynchronized-mutable ^long black-score
+   ^AtomicInteger white-score
+   ^AtomicInteger black-score
    hash
    moves]
 
-  IBoard
-
+  ICloneable
+  
   (clone [_]
     (Board.
       dim
       (p/clone-positions positions)
-      white-score
-      black-score
+      (AtomicInteger. (.get white-score))
+      (AtomicInteger. (.get black-score))
       hash
       (atom @moves)))
 
-  (^long white_score [_] white-score)
-  (^long add_white_score [_ ^long n] (set! white-score (unchecked-add white-score n)))
+  
+  IBoard
 
-  (^long black_score [_] black-score)
-  (^long add_black_score [_ ^long n] (set! black-score (unchecked-add black-score n))))
+  (white-score [_] (.get white-score))
+  (add-white-score [_ n] (.addAndGet white-score n))
+  (black-score [_] (.get black-score))
+  (add-black-score [_ n] (.addAndGet black-score n)))
 
 (defn dim [^Board board]
   (.dim board))
@@ -62,12 +71,14 @@
 
 ;;;
 
+(declare color)
+
 (defn ^Board empty-board [dim]
   (make-record Board
     :dim dim
     :positions (p/initial-positions dim)
-    :white-score 0
-    :black-score 0
+    :white-score (AtomicInteger. 0)
+    :black-score (AtomicInteger. 0)
     :hash (h/zobrist-hash)
     :moves (atom (set (range (* dim dim))))))
 
@@ -77,13 +88,13 @@
                (map #(char (+ (int \A) %)))
                (remove #{\I})
                (apply str))]
-    (println "Black:" (.black_score board))
-    (println "White:" (.white_score board))
+    (println "Black:" (black-score board))
+    (println "White:" (white-score board))
     (println (str "  " cols "\n"))
     (doseq [y (reverse (range dim))]
       (print (str (inc y) " "))
       (doseq [x (range dim)]
-        (let [c (.color ^Position (position board (p/coord->position dim x y)))]
+        (let [c (color (position board (p/coord->position dim x y)))]
           (print
             (case c
               :white "O"
@@ -92,37 +103,32 @@
       (println (str " " (inc y))))
     (println (str "\n  " cols "\n"))))
 
-(defmethod print-method Board [o ^java.io.Writer w]
-  (.write w (with-out-str (print-board o))))
+(defmethod print-method Board [o w]
+  (.write ^java.io.Writer w (str (with-out-str (print-board o)))))
 
 ;;;
 
-(declare parent color)
-
 (defmacro def-getter [name field]
-  `(defn ~(with-meta name {:tag Long/TYPE})
-     {:inline (fn [pos#] (list '~field pos#))
-      :inline-arities #{1}}
+  `(defn ~name
      [^Position pos#]
      (~field pos#)))
 
 (defmacro def-setter [name method]
-  `(defn ~(with-meta name {:tag Long/TYPE})
+  `(defn ~name
      [^Position pos# value#]
      (~method pos# value#)))
 
 (defmacro def-resetter [name method]
   `(defn ~name
-     {:inline (fn [pos#] (list '~method pos#))
-      :inline-arities #{1}}
      [^Position pos#]
      (~method pos#)))
 
-(defmacro foreach-neighbor [board [p n] & body]
+(defmacro foreach-neighbor [board [p n] params & body]
   `(let [^Board board# ~board
          ^Position pos# ~p
          pos# (.value pos#)]
-     (p/foreach-neighbor (.dim board#) (.positions board#) [pos# ~n]
+     (p/foreach-neighbor (.dim board#) (.positions board#)
+       [pos# ~(with-meta n {:tag "pushkin.position.Position"})] ~params
        ~@body)))
 
 ;;;
@@ -165,14 +171,6 @@
               (do (set-parent origin pos) pos)
               (recur parent))))))))
 
-(defn atari? [^Board board ^Position pos]
-  (let [pos (parent board pos)
-        sum (neighbor-sum pos)
-        sum-of-squares (neighbor-sum-of-squares pos)]
-    (=
-      (unchecked-multiply-int sum sum)
-      (unchecked-multiply-int (liberties pos) sum-of-squares))))
-
 ;;;
 
 (defn join-to-parent [^Position pos ^Position parent]
@@ -186,12 +184,10 @@
   (let [stone-color (color pos)]
 
     (case stone-color
-      :white (.add_black_score board 1)
-      :black (.add_white_score board 1))
+      :white (add-black-score board 1)
+      :black (add-white-score board 1))
 
     (h/toggle (.hash board) pos stone-color)
-
-    (assert (not= :empty (color pos)))
 
     (set-color pos :empty)
     (set-parent pos pos)
@@ -203,29 +199,33 @@
     (swap! (.moves board) conj (.value pos))
 
     (let [val (.value pos)]
-      (foreach-neighbor board [pos n]
+      (foreach-neighbor board [pos n] []
 
+        ;; update neighbor counts
         (case stone-color
           :black (add-black-neighbors n -1)
           :white (add-white-neighbors n -1))
         
-        (when-not (identical? stone-color (color n))
-
-          (when (identical? :empty (color n))
-            (let [n-val (.value n)]
-              (add-liberties pos 1)
-              (add-neighbor-sum pos n-val)
-              (add-neighbor-sum-of-squares pos (unchecked-multiply-int n-val n-val))))
-
-          (let [pn (parent board n)]
-            (add-liberties pn 1)
-            (add-neighbor-sum pn val)
-            (add-neighbor-sum-of-squares pn (unchecked-multiply-int val val))))))))
+        (let [n-color (color n)]
+          (when-not (identical? stone-color n-color)
+            
+            ;; add empty neighbors to local values
+            (when (identical? :empty n-color)
+              (let [n-val (.value n)]
+                (add-liberties pos 1)
+                (add-neighbor-sum pos n-val)
+                (add-neighbor-sum-of-squares pos (unchecked-multiply n-val n-val))))
+            
+            ;; add self to neighbors
+            (let [pn (parent board n)]
+              (add-liberties pn 1)
+              (add-neighbor-sum pn val)
+              (add-neighbor-sum-of-squares pn (unchecked-multiply val val)))))))))
 
 (defn clear-group [^Board board ^Position pos]
   (let [stone-color (color pos)]
     (remove-stone board pos)
-    (foreach-neighbor board [pos n]
+    (foreach-neighbor board [pos n] []
       (when (identical? stone-color (color n))
         (clear-group board n)))))
 
@@ -237,28 +237,34 @@
   (swap! (.moves board) disj (.value pos))
 
   ;; update neighbors
-  (let [val (.value pos)]
-    (foreach-neighbor board [pos n]
-      
+  (let [val (.value pos)
+        opponent-color (p/opponent stone-color)]
+    (foreach-neighbor board [pos n] []
+
+      ;; update neighbor counts
       (case stone-color
         :black (add-black-neighbors n 1)
         :white (add-white-neighbors n 1))
       
       (let [pn (parent board n)
-            pn (if (identical? stone-color (color pn))
-                 (do (join-to-parent pn pos) pos)
-                 pn)]
-        (add-liberties pn -1)
-        (add-neighbor-sum pn (- val))
-        (add-neighbor-sum-of-squares pn (- (unchecked-multiply-int val val))))))
+            pn-color (color pn)
 
-  ;; check for captures
-  (let [opponent-color (p/opponent stone-color)]
-    (foreach-neighbor board [pos n]
-      (when (identical? opponent-color (color n))
-        (let [pn (parent board n)]
-          (when (zero? (liberties pn))
-            (clear-group board n)))))))
+            ;; join neighboring groups to this position
+            pn (if (identical? stone-color pn-color)
+                 (do
+                   (join-to-parent pn pos)
+                   pos)
+                 pn)]
+
+        ;; if this is a pending capture, clear the group out
+        (if (and (identical? pn-color opponent-color) (== 1 (liberties pn)))
+          (clear-group board pn)
+
+          ;; otherwise, just update the liberty counts
+          (do
+            (add-liberties pn -1)
+            (add-neighbor-sum pn (unchecked-subtract 0 val))
+            (add-neighbor-sum-of-squares pn (unchecked-subtract 0 (unchecked-multiply val val)))))))))
 
 ;;;
 
@@ -267,51 +273,113 @@
      (neighbors board pos (constantly true)))
   ([board pos predicate]
      (let [ns (atom [])]
-       (foreach-neighbor board [pos n]
+       (foreach-neighbor board [pos n] []
          (when (predicate (color n))
            (swap! ns conj n)))
        @ns)))
 
-(defn capture? [board color p]
-  (->> (neighbors board p #{(p/opponent color)})
-    (filter #(atari? board %))
-    first))
+(defn num-neighbors [board ^Position pos]
+  (p/num-neighbors (.value pos) (dim board)))
+
+(defn atari
+  "Returns the numerical position of the atari point for 'pos', nor nil if there is none."
+  [^Board board ^Position pos]
+  (let [pos (parent board pos)
+        liberties (liberties pos)]
+    (when (<= liberties 4)
+      (let [sum (neighbor-sum pos)
+            sum-of-squares (neighbor-sum-of-squares pos)]
+        (when (==
+                (long (unchecked-multiply (long sum) (long sum)))
+                (long (unchecked-multiply (long liberties) (long sum-of-squares))))
+          (/ (long sum) (long liberties)))))))
+
+(defn atari? [board pos]
+  (boolean (atari board pos)))
+
+(defn capture [board stone-color pos]
+  (let [opponent-color (p/opponent stone-color)]
+    (foreach-neighbor board [pos n] [captured nil]
+      (if captured
+        captured
+        (when (and 
+                (identical? opponent-color (color n))
+                (atari? board n))
+          n)))))
+
+(defn capture? [board stone-color pos]
+  (boolean (capture board stone-color pos)))
+
+(defn capture-all? [board stone-color pos]
+  (let [opponent-color (p/opponent stone-color)]
+    (foreach-neighbor board [pos n] [capture? true]
+      (and capture?
+        (if (identical? opponent-color (color n))
+          (atari? board n)
+          true)))))
 
 (defn eye? [board p]
-  (let [num-neighbors (count (neighbors board p))]
+  (let [num-neighbors (num-neighbors board p)]
     (or
       (and
-        (= num-neighbors (white-neighbors p))
+        (== num-neighbors (white-neighbors p))
         (not (capture? board :black p))
         :white)
       (and
-        (= num-neighbors (black-neighbors p))
+        (== num-neighbors (black-neighbors p))
         (not (capture? board :white p))
         :black))))
 
-(defn ko? [board color p]
-  (when-let [n (capture? board color p)]
+(defn ko? [^Board board stone-color p]
+  (when-let [n (capture board stone-color p)]
     (and
       (= n (parent board n))
-      (case color
+      (case stone-color
         :white (h/ko? (.hash board) p n)
         :black (h/ko? (.hash board) n p)))))
 
-(defn suicide? [board color p]
-  (let [num-neighbors (count (neighbors board p))
-        same-neighbors (neighbors board p #{color})
-        diff-neighbors (neighbors board p #{(p/opponent color)})]
-    (and
-      (= num-neighbors (+ (count same-neighbors) (count diff-neighbors)))
-      (not (some #(atari? board %) diff-neighbors))
-      (every? #(atari? board %) same-neighbors))))
+(defn suicide? [board stone-color p]
+  (let [num-neighbors (num-neighbors board p)
+        num-same-neighbors (case stone-color
+                             :white (white-neighbors p)
+                             :black (black-neighbors p))
+        num-diff-neighbors (case stone-color
+                             :white (black-neighbors p)
+                             :black (white-neighbors p))]
+    (boolean
+      (and
+        (== num-neighbors (unchecked-add (long num-same-neighbors) (long num-diff-neighbors)))
+        (if (pos? num-diff-neighbors)
+          (not (capture? board stone-color p))
+          true)
+        (if (pos? num-same-neighbors)
+          (capture-all? board (p/opponent stone-color) p)
+          true)))))
 
 (defn final-score [^Board board]
   (merge-with +
-    {:white (.white_score board)
-     :black (.black_score board)}
+    {:white (white-score board)
+     :black (black-score board)}
     (->> (.positions board)
       (filter #(= :empty (color %)))
       (map #(eye? board %))
       (remove false?)
       frequencies)))
+
+
+;;;
+
+(defprotocol IMoveSet
+  (stone-added [_ pos color])
+  (stone-removed [_ pos])
+  (push-position [_ pos])
+  (pop-position [_]))
+
+(defrecord MoveSet
+  [^BitSet white-atari
+   ^BitSet black-atari
+   ^BitSet suicide
+   ^BitSet eyes])
+
+(defn move-set [board positions]
+  )

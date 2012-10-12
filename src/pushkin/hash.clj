@@ -20,7 +20,7 @@
 
 (def hash-bits 128)
 
-(defn random-bitset [^Random rng size]
+(defn random-bitset [^Random rng ^long size]
   (let [bigint (BigInteger. size rng)
         bitset (BitSet. size)]
     (dotimes [i size]

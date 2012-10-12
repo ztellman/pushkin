@@ -43,12 +43,12 @@
 
 (deftest ^:benchmark benchmark-increment-neighbors
   (let [ps (p/clone-positions (p/initial-positions 9))]
-    (long-bench "increment neighbors w/ 2 neighbors"
-      (p/foreach-neighbor 9 ps [0 n]
+    (bench "foreach-neighbor increment w/ 2 neighbors"
+      (p/foreach-neighbor 9 ps [0 n] []
         (.add_black_neighbors n 1)))
-    (long-bench "increment neighbors w/ 3 neighbors"
-      (p/foreach-neighbor 9 ps [1 n]
+    (bench "foreach-neighbor increment w/ 3 neighbors"
+      (p/foreach-neighbor 9 ps [1 n] []
         (.add_black_neighbors n 1)))
-    (long-bench "increment neighbors w/ 4 neighbors"
-      (p/foreach-neighbor 9 ps [42 n]
+    (bench "foreach-neighbor increment w/ 4 neighbors"
+      (p/foreach-neighbor 9 ps [42 n] []
         (.add_black_neighbors n 1)))))

@@ -8,6 +8,7 @@
 
 (ns pushkin.test.simulator
   (:use
+    [pushkin core]
     [pushkin.test.core]
     [clojure test])
   (:require
@@ -43,15 +44,21 @@
           (b/add-stone board move player)
           (recur (p/opponent player) false (conj moves coord)))
         (if pass?
-          (validate-score board moves)
+          (do
+            (validate-score board moves)
+            board)
           (recur (p/opponent player) true (conj moves "pass")))))))
 
 (deftest ^:benchmark benchmark-playout
   (let [board (b/empty-board 9)]
-    (bench "random playout"
-      (s/playout-game (.clone board) :black false))))
+    (bench "clone board"
+      (clone board))
+    (bench "random 9x9 playout"
+      (s/playout-game (clone board) :black false))))
 
 (deftest ^:stress validate-playouts
-  (println "\nvalidating playouts...\n")
-  (dotimes-p [_ 1e2]
-    (run-playout-validation 9)))
+  (print "\nvalidating playouts") (flush)
+  (dotimes-p [_ 1e3]
+    (run-playout-validation 9)
+    (print ".") (flush))
+  (println))

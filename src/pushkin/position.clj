@@ -41,7 +41,7 @@
   (let [ary (make-array (Class/forName "[J") (* dim dim))]
     (dotimes [i (* dim dim)]
       (let [neighbors (into-array Long/TYPE (calculate-neighbors i dim))]
-        (aset ary i neighbors)))
+        (aset ^objects ary i neighbors)))
     ary))
 
 (def neighbors-2x2 (create-neighbor-array 2))
@@ -56,6 +56,9 @@
               13 neighbors-13x13
               19 neighbors-19x19)]
     (aget ^"[[J" ary pos)))
+
+(defn ^long num-neighbors [^long pos ^long dim]
+  (Array/getLength (neighbors pos dim)))
 
 ;;;
 
@@ -81,7 +84,7 @@
 
 (defmacro += [field n]
   `(do
-     (set! ~field (long (unchecked-add-int (long ~field) (long ~n))))
+     (set! ~field (long (unchecked-add (long ~field) (long ~n))))
      nil))
 
 (deftype Position
@@ -135,7 +138,7 @@
   (let [ary (make-array Position (* dim dim))]
     (dotimes [pos (* dim dim)]
       (let [neighbors (neighbors pos dim)]
-        (aset ary pos
+        (aset ^objects ary pos
           (Position.
             pos
             :empty
@@ -162,21 +165,27 @@
 
 ;;;
 
-(defn- unrolled-action [neighbor body index]
-  `(let [~neighbor (pushkin.position/position positions## (aget neighbors## ~index))]
-     ~@body))
+(defn- unrolled-action [neighbor body val index]
+  `(~neighbor (pushkin.position/position positions## (aget neighbors## ~index))
+    ~val (do ~@body)))
 
-(defmacro foreach-neighbor [dim positions [pos neighbor] & body]
-  (unify-gensyms
-    `(let [^objects positions## ~positions
-           ^"[J" neighbors## (neighbors ~pos ~dim)]
-       (case (long (Array/getLength neighbors##))
-         
-           2 (do ~@(map #(unrolled-action neighbor body %) (range 2)))
-         
-           3 (do ~@(map #(unrolled-action neighbor body %) (range 3)))
-         
-           4 (do ~@(map #(unrolled-action neighbor body %) (range 4)))))))
+;; just a tiny bit awful
+(defmacro foreach-neighbor [dim positions [pos neighbor] [val initial-value] & body]
+  (let [val (or val '_)]
+    (unify-gensyms
+      `(let [^objects positions## ~positions
+             ^"[J" neighbors## (neighbors ~pos ~dim)
+             ~val ~initial-value]
+         (case (long (Array/getLength neighbors##))
+           
+           2 (let [~@(mapcat #(unrolled-action neighbor body val %) (range 2))]
+               ~val)
+           
+           3 (let [~@(mapcat #(unrolled-action neighbor body val %) (range 3))]
+               ~val)
+           
+           4 (let [~@(mapcat #(unrolled-action neighbor body val %) (range 4))]
+               ~val))))))
 
 ;;;
 

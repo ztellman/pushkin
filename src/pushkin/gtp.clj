@@ -23,18 +23,19 @@
       (case cmd
         
         :genmove
-        (do
-          (->>
-            (range 8)
-            (map (fn [_]
-                   (future
-                     (dotimes [_ playouts]
-                       (t/traverse @node)))))
-            doall
-            (map deref)
-            doall)
-          (let [move (t/gen-move @node (curr-move))]
-            (p/position->gtp move @dim)))
+        (time
+          (do
+            (->>
+              (range 8)
+              (map (fn [_]
+                     (future
+                       (dotimes [_ playouts]
+                         (t/traverse @node)))))
+              doall
+              (map deref)
+              doall)
+            (let [move (t/gen-move @node (curr-move))]
+              (p/position->gtp move @dim))))
 
         :play
         (let [[color position] args
