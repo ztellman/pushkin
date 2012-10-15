@@ -15,9 +15,14 @@
     [clojure.string :as str])
   (:import
     [java.lang.reflect
-     Array]))
+     Array])
+  (:refer-clojure
+    :exclude
+    [pop! contains?]))
 
 ;;;
+
+(set! *unchecked-math* true)
 
 (defn coord->position
   "Integer position for a set of x,y coords."
@@ -44,107 +49,176 @@
         (aset ^objects ary i neighbors)))
     ary))
 
-(def neighbors-2x2 (create-neighbor-array 2))
-(def neighbors-9x9 (create-neighbor-array 9))
-(def neighbors-13x13 (create-neighbor-array 13))
-(def neighbors-19x19 (create-neighbor-array 19))
+(let [neighbors-2x2 (create-neighbor-array 2)
+      neighbors-9x9 (create-neighbor-array 9)
+      neighbors-13x13 (create-neighbor-array 13)
+      neighbors-19x19 (create-neighbor-array 19)]
 
-(defn neighbors [^long pos ^long dim]
-  (let [ary (case dim
-              2 neighbors-2x2
-              9 neighbors-9x9
-              13 neighbors-13x13
-              19 neighbors-19x19)]
-    (aget ^"[[J" ary pos)))
+  (defn neighbors [^long pos ^long dim]
+    (let [ary (case dim
+                2 neighbors-2x2
+                9 neighbors-9x9
+                13 neighbors-13x13
+                19 neighbors-19x19)]
+      (aget ^"[[J" ary pos))))
 
 (defn ^long num-neighbors [^long pos ^long dim]
   (Array/getLength (neighbors pos dim)))
 
 ;;;
 
-(definterface IPosition
-  (clone [])
-  (color [])
-  (set_color [c])
-  (^long liberties [])
-  (add_liberties [^long n])
-  (reset_liberties [])
-  (^long neighbor_sum [])
-  (add_neighbor_sum [^long n])
-  (reset_neighbor_sum [])
-  (^long neighbor_sum_of_squares [])
-  (add_neighbor_sum_of_squares [^long n])
-  (reset_neighbor_sum_of_squares [])
-  (^long parent [])
-  (set_parent [^long n])
-  (^long white_neighbors [])
-  (add_white_neighbors [^long n])
-  (^long black_neighbors [])
-  (add_black_neighbors [^long n]))
+(defprotocol IPosition
+  (position->map [_])
+  (clone [_])
+  (color [_])
+  (set-color [_ c])
+  (reset [_])
+  (surrounded? [_])
+  (add-neighbor [_ p])
+  (remove-neighbor [_ p])
+  (unify [_ p])
+  (set-parent [_ p])
+  (liberties [_])
+  (sum [_])
+  (sum-of-squares [_])
+  (white-neighbors [_])
+  (black-neighbors [_])
+  (parent [_])
+  (atari [_]))
 
 (defmacro += [field n]
   `(do
-     (set! ~field (long (unchecked-add (long ~field) (long ~n))))
+     (set! ~field (long (+ (long ~field) (long ~n))))
+     nil))
+
+(defmacro -= [field n]
+  `(do
+     (set! ~field (long (- (long ~field) (long ~n))))
      nil))
 
 (deftype Position
   [^long value
-   ^:unsynchronized-mutable color
-   ^:unsynchronized-mutable ^long liberties
-   ^:unsynchronized-mutable ^long neighbor-sum
-   ^:unsynchronized-mutable ^long neighbor-sum-of-squares
-   ^:unsynchronized-mutable ^long parent
-   ^:unsynchronized-mutable ^long white-neighbors
-   ^:unsynchronized-mutable ^long black-neighbors]
+   ^long initial-liberties
+   ^long initial-sum
+   ^long initial-sum-of-squares
+   ^:unsynchronized-mutable -color
+   ^:unsynchronized-mutable ^long -liberties
+   ^:unsynchronized-mutable ^long -sum
+   ^:unsynchronized-mutable ^long -sum-of-squares
+   ^:unsynchronized-mutable ^long -parent
+   ^:unsynchronized-mutable ^long -white-neighbors
+   ^:unsynchronized-mutable ^long -black-neighbors]
 
   IPosition
+
+  (position->map [_]
+    {:value value
+     :color -color
+     :liberties -liberties
+     :sum -sum
+     :sum-of-squares -sum-of-squares
+     :white-neighbors -white-neighbors
+     :black-neighbors -black-neighbors})
 
   (clone [_]
     (Position.
       value
-      color
-      liberties
-      neighbor-sum
-      neighbor-sum-of-squares
-      parent
-      white-neighbors
-      black-neighbors))
+      initial-liberties
+      initial-sum
+      initial-sum-of-squares
+      -color
+      -liberties
+      -sum
+      -sum-of-squares
+      -parent
+      -white-neighbors
+      -black-neighbors))
 
-  (color [_] color)
-  (set_color [_ c] (set! color c) nil)
+  (color [_] -color)
+  (set-color [_ c] (set! -color c) nil)
+  (parent [_] -parent)
+  (set-parent [_ p] (set! -parent (.value ^Position p)) nil)
+  (liberties [_] -liberties)
+  (sum [_] -sum)
+  (sum-of-squares [_] -sum-of-squares)
+  (white-neighbors [_] -white-neighbors)
+  (black-neighbors [_] -black-neighbors)
 
-  (^long liberties [_] liberties)
-  (add_liberties [_ ^long n] (+= liberties n))
-  (reset_liberties [_] (set! liberties 0) nil)
+  (reset [_]
+    (set! -color :empty)
+    (set! -parent value)
+    (set! -liberties initial-liberties)
+    (set! -sum initial-sum)
+    (set! -sum-of-squares initial-sum-of-squares)
+    (set! -white-neighbors 0)
+    (set! -black-neighbors 0)
+    nil)
 
-  (^long neighbor_sum [_] neighbor-sum)
-  (add_neighbor_sum [_ ^long n] (+= neighbor-sum n))
-  (reset_neighbor_sum [_] (set! neighbor-sum 0) nil)
+  (surrounded? [_]
+    (if (== initial-liberties -white-neighbors)
+      :white
+      (if (== initial-liberties -black-neighbors)
+        :black
+        (if (== initial-liberties (+ -white-neighbors -black-neighbors))
+          :mixed
+          nil))))
 
-  (^long neighbor_sum_of_squares [_] neighbor-sum-of-squares)
-  (add_neighbor_sum_of_squares [_ ^long n] (+= neighbor-sum-of-squares n))
-  (reset_neighbor_sum_of_squares [_] (set! neighbor-sum-of-squares 0) nil)
+  (add-neighbor [_ p]
+    (let [^Position p p
+          val (.value p)]
+      (-= -liberties 1)
+      (-= -sum (long val))
+      (-= -sum-of-squares (* (long val) (long val)))
+      (if (identical? :white (color p))
+        (+= -white-neighbors 1)
+        (+= -black-neighbors 1))
+      nil))
 
-  (^long parent [_] parent)
-  (set_parent [_ ^long n] (set! parent (long n)) nil)
+  (remove-neighbor [_ p]
+    (let [^Position p p
+          val (.value p)]
+      (+= -liberties 1)
+      (+= -sum (long val))
+      (+= -sum-of-squares (* (long val) (long val)))
+      (if (identical? :white (color p))
+        (-= -white-neighbors 1)
+        (-= -black-neighbors 1))
+      nil))
 
-  (^long white_neighbors [_] white-neighbors)
-  (add_white_neighbors [_ ^long n] (+= white-neighbors n))
+  (unify [this p]
+    (let [^Position p p]
+      (when (not (== (long value) (long (parent p))))
+        (set-parent p this)
+        (+= -liberties (liberties p))
+        (+= -sum (sum p))
+        (+= -sum-of-squares (sum-of-squares p))))
+    nil)
 
-  (^long black_neighbors [_] black-neighbors)
-  (add_black_neighbors [_ ^long n] (+= black-neighbors n)))
+  (atari [_]
+    (when (and
+            (<= (long -liberties) 4)
+            (==
+              (* (long -sum) (long -sum))
+              (* (long -liberties) (long -sum-of-squares))))
+      (unchecked-divide-int (int -sum) (int -liberties)))))
 
 (defn initial-positions [dim]
   (let [ary (make-array Position (* dim dim))]
     (dotimes [pos (* dim dim)]
-      (let [neighbors (neighbors pos dim)]
+      (let [neighbors (neighbors pos dim)
+            liberties (count neighbors)
+            sum (apply + neighbors)
+            sum-of-squares (->> neighbors (map #(* % %)) (apply +))]
         (aset ^objects ary pos
           (Position.
             pos
+            liberties
+            sum
+            sum-of-squares
             :empty
-            (count neighbors)
-            (apply + neighbors)
-            (->> neighbors (map #(* % %)) (apply +))
+            liberties
+            sum
+            sum-of-squares
             pos
             0
             0))))
@@ -190,9 +264,9 @@
 ;;;
 
 (defn opponent [color]
-  (case color
-    :white :black
-    :black :white))
+  (if (identical? :black color)
+    :white
+    :black))
 
 ;;;
 
@@ -209,7 +283,7 @@
         (inc y)))))
 
 (defn gtp->position [pos dim]
-  (let [pos (str/lower-case pos)]
+  (let [pos (str/lower-case (name pos))]
     (if (= "pass" pos)
       :pass
       (let [[col & row] pos]

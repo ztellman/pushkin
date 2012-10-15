@@ -9,6 +9,7 @@
 (ns pushkin.test.board
   (:use
     [pushkin.test.core]
+    [pushkin.core]
     [clojure.test])
   (:require
     [pushkin.position :as p]
@@ -20,7 +21,15 @@
 
 ;; brute force implementations of board lookups, for validation
 
-(def neighbors b/neighbors)
+(defn neighbors
+  ([board pos]
+     (neighbors board pos (constantly true)))
+  ([board pos predicate]
+     (let [ns (atom [])]
+       (b/foreach-neighbor board [pos n] []
+         (when (predicate (p/color n))
+           (swap! ns conj n)))
+       @ns)))
 
 (defn group [^Board board n]
   (let [p (b/parent board n)]
@@ -50,11 +59,15 @@
     count))
 
 (defn black-neighbors [board pos]
-  (->> (neighbors board pos #{:black})
+  (->> pos
+    (group board)
+    (mapcat #(neighbors board % #{:black}))
     count))
 
 (defn white-neighbors [board pos]
-  (->> (neighbors board pos #{:white})
+  (->> pos
+    (group board)
+    (mapcat #(neighbors board % #{:white}))
     count))
 
 (defn atari [board pos]
@@ -72,15 +85,16 @@
 
 (defn eye? [board p]
   (let [num-neighbors (count (neighbors board p))]
-    (or
-      (and
-        (= num-neighbors (white-neighbors board p))
-        (not (capture board :black p))
-        :white)
-      (and
-        (= num-neighbors (black-neighbors board p))
-        (not (capture board :white p))
-        :black))))
+    (when-let [v (or
+                   (and
+                     (= num-neighbors (white-neighbors board p))
+                     (not (capture board :black p))
+                     :white)
+                   (and
+                     (= num-neighbors (black-neighbors board p))
+                     (not (capture board :white p))
+                     :black))]
+      v)))
 
 (defn suicide? [board color p]
   (let [num-neighbors (count (neighbors board p))
@@ -91,18 +105,16 @@
       (not (some #(atari board %) diff-neighbors))
       (every? #(atari board %) same-neighbors))))
 
-(def field-validations
-  [[:white-neighbors (constantly true) b/white-neighbors white-neighbors]
-   [:black-neighbors (constantly true) b/black-neighbors black-neighbors]])
-
 (def parent-field-validations
-  [[:sum (constantly true) b/neighbor-sum neighbor-sum]
-   [:sum-of-squares (constantly true) b/neighbor-sum-of-squares neighbor-sum-of-squares]
-   [:liberties (constantly true) b/liberties liberties]])
+  [[:sum (constantly true) p/sum neighbor-sum]
+   [:sum-of-squares (constantly true) p/sum-of-squares neighbor-sum-of-squares]
+   [:liberties (constantly true) p/liberties liberties]
+   [:white-neighbors #{:empty} p/white-neighbors white-neighbors]
+   [:black-neighbors #{:empty} p/black-neighbors black-neighbors]
+   [:atari #{:white :black} p/atari atari]])
 
 (def board-validations
-  [[:atari #{:white :black} b/atari atari]
-   [:eye #{:white :black} b/eye? eye?]])
+  [[:eye #{:empty} b/eye? eye?]])
 
 (def move-validations
   [[:capture b/capture capture]
@@ -114,30 +126,23 @@
 
       (let [coord (p/position->gtp (.value p) (b/dim board))]
 
-        ;; field validations
-        (doseq [[field predicate lookup from-scratch] field-validations]
-          (when (predicate (b/color p))
-            (let [expected (from-scratch board p)
-                  actual (lookup p)]
-              (is (= expected actual) (str field " at " coord)))))
-
         ;; parent field validations
         (doseq [[field predicate lookup from-scratch] parent-field-validations]
-          (when (predicate (b/color p))
+          (when (predicate (p/color p))
             (let [expected (from-scratch board p)
                   actual (lookup (b/parent board p))]
               (is (= expected actual) (str field " at " coord)))))
 
         ;; board validations
         (doseq [[field predicate lookup from-scratch] board-validations]
-          (when (predicate (b/color p))
+          (when (predicate (p/color p))
             (let [expected (from-scratch board p)
                   actual (lookup board p)]
               (is (= expected actual) (str field " at " coord)))))
 
         ;; move validations
         (doseq [[field lookup from-scratch] move-validations]
-          (when (= :empty (b/color p))
+          (when (= :empty (p/color p))
             (doseq [color [:black :white]]
               (let [expected (from-scratch board color p)
                     actual (lookup board color p)]
@@ -177,30 +182,17 @@
         black-parent (b/parent board (b/position board 7))
         white-parent (b/parent board (b/position board 6))
         capture-point (b/position board 8)]
-    (is (= 2 (b/liberties black-parent)))
-    (is (= 16 (b/neighbor-sum black-parent)))
-    (is (= 8 (b/atari board black-parent)))
-    (is (= nil (b/atari board white-parent)))
+    (is (= 2 (p/liberties black-parent)))
+    (is (= 16 (p/sum black-parent)))
+    (is (= 128 (p/sum-of-squares black-parent)))
+    (is (= 8 (p/atari black-parent)))
+    (is (= nil (p/atari white-parent)))
     (is (b/capture board :white capture-point))
     (is (b/capture-all? board :white capture-point))
     (is (b/suicide? board :black capture-point))
     (is (not (b/suicide? board :white capture-point)))))
 
 ;;;
-
-(deftest ^:benchmark benchmark-accessors
-  (let [board (b/empty-board 9)
-        pos (b/position board 42)]
-    (long-bench "get color"
-      (b/color pos))
-    (long-bench "set color"
-      (b/set-color pos :white))
-    (long-bench "get liberties"
-      (b/liberties pos))
-    (long-bench "add liberties"
-      (b/add-liberties pos 1))
-    (long-bench "reset liberties"
-      (b/reset-liberties pos))))
 
 (deftest ^:benchmark benchmark-tests
   (let [board (board 9
@@ -213,15 +205,20 @@
     (bench "parent"
       (b/parent board black-child))
     (bench "atari"
-      (b/atari board black-parent))
+      (p/atari black-parent))
+    (bench "eye?"
+      (b/eye? board capture-point))
     (bench "capture"
       (b/capture board :white capture-point))
     (bench "suicide?"
       (b/suicide? board :black capture-point))))
 
-(deftest ^:benchmark benchmark-add-remove-stone
+#_(deftest ^:benchmark benchmark-add-remove-stone
   (let [board (b/empty-board 9)
         pos (b/position board 42)]
+    (let [board (clone board)]
+      (long-bench "add stone"
+        (b/add-stone board pos :black)))
     (long-bench "add stone, then remove"
       (b/add-stone board pos :black)
       (b/remove-stone board pos))))

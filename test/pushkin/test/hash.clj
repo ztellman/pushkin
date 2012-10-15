@@ -8,6 +8,7 @@
 
 (ns pushkin.test.hash
   (:use
+    [pushkin.core]
     [pushkin.test.core]
     [clojure.test])
   (:require
@@ -20,6 +21,6 @@
     (bench "hash rotate"
       (h/rotate hash))
     (bench "hash clone"
-      (h/clone hash))
+      (clone hash))
     (bench "hash ko check"
       (h/ko? hash 42 43))))

@@ -29,26 +29,18 @@
   (let [ps (p/initial-positions 9)
         p (p/position ps 42)]
     (long-bench "lookup field"
-      (.liberties p))))
+      (p/liberties p))))
 
-(deftest ^:benchmark benchmark-field-increment
+(deftest ^:benchmark benchmark-add-remove-neighbors
   (let [ps (p/initial-positions 9)
-        p (p/position ps 42)]
-    (long-bench "increment field"
-      (.add_black_neighbors p 1))))
+        a (p/position ps 42)
+        b (p/position ps 43)]
+    (p/set-color a :black)
+    (p/set-color b :black)
+    (long-bench "add neighbor, then remove"
+      (p/add-neighbor a b)
+      (p/remove-neighbor a b))))
 
 (deftest ^:benchmark benchmark-neighbor-lookup
-  (bench "lookup neighbors"
+  (long-bench "lookup neighbors"
     (p/neighbors 42 9)))
-
-(deftest ^:benchmark benchmark-increment-neighbors
-  (let [ps (p/clone-positions (p/initial-positions 9))]
-    (bench "foreach-neighbor increment w/ 2 neighbors"
-      (p/foreach-neighbor 9 ps [0 n] []
-        (.add_black_neighbors n 1)))
-    (bench "foreach-neighbor increment w/ 3 neighbors"
-      (p/foreach-neighbor 9 ps [1 n] []
-        (.add_black_neighbors n 1)))
-    (bench "foreach-neighbor increment w/ 4 neighbors"
-      (p/foreach-neighbor 9 ps [42 n] []
-        (.add_black_neighbors n 1)))))

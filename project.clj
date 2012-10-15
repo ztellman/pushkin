@@ -7,7 +7,7 @@
                  [org.uncommons.maths/uncommons-maths "1.2.2" :exclusions [jfree/jfreechart]]]
   :warn-on-reflection true
   :source-paths ["src" "../duel/src"]
-  :test-selectors {:default #(not (some #{:stress :benchmark} %))
+  :test-selectors {:default #(not (some #{:stress :benchmark} (keys %)))
                    :stress :stress
                    :benchmark :benchmark}
-  :jvm-opts ["-server" "-Xmx4g"])
+  :jvm-opts ["-server" "-Xmx12g"])

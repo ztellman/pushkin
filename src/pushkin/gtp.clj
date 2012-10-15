@@ -10,6 +10,8 @@
   (:require
     [duel.core :as duel]
     [pushkin.tree :as t]
+    [pushkin.board :as b]
+    [pushkin.simulator :as s]
     [pushkin.position :as p]))
 
 (defn handler [playouts]
@@ -20,34 +22,38 @@
         dim (atom 9)
         node (atom (t/starting-node 9))]
     (fn [[cmd & args]]
+
+      (when-let [n (t/current-node @node)]
+        (reset! node n))
+      ;;(prn cmd args)
+      (->> @node :simulator :board b/print-board)
       (case cmd
         
         :genmove
-        (time
-          (do
-            (->>
-              (range 8)
-              (map (fn [_]
-                     (future
-                       (dotimes [_ playouts]
-                         (t/traverse @node)))))
-              doall
-              (map deref)
-              doall)
-            (let [move (t/gen-move @node (curr-move))]
-              (p/position->gtp move @dim))))
+        (do
+          (->>
+            (range 4)
+            (map (fn [_]
+                   (future
+                     (dotimes [_ playouts]
+                       (t/traverse @node 100)))))
+            doall
+            (map deref)
+            doall)
+          (p/position->gtp (t/generate-move @node) @dim))
 
         :play
         (let [[color position] args
               position (p/gtp->position position @dim)]
-          (t/set-move @node (curr-move) position)
+          (t/force-move @node position)
           "")
 
         ""))))
 
-(defn gnugo-playout [playouts]
-  (duel/run-trials
+(defn gnugo-playout [playouts & params]
+  (apply duel/run-trials
     #(duel/create-internal-player (handler playouts))
-    #(duel/gnugo-player :level 1)))
+    #(duel/gnugo-player :level 1)
+    params))
 
 

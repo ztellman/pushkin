@@ -8,32 +8,99 @@
 
 (ns pushkin.tree
   (:use
-    [pushkin core])
+    [pushkin core]
+    [useful datatypes])
   (:require
     [pushkin.position :as p]
     [pushkin.simulator :as s]
     [pushkin.board :as b])
   (:import
-    [pushkin.board
-     Board]))
+    [pushkin.simulator
+     Simulator]))
 
-(defprotocol INode
-  (score [_])
-  (visits [_])
-  (add-score [_ score])
-  (add-visit [_])
-  (playout [_ n])
-  (leaf? [_])
-  (selected-move [_])
-  (select-move [_ move])
-  (best-move [_])
-  (best-uct [_]))
+(set! *unchecked-math* true)
+
+;;;
 
 (def epsilon 1e-6)
 
-(def weight 0.1)
+(defn merge-tallies [current new]
+  (merge-with + current (assoc new :visits 1)))
 
-(defn uct-value [parent child]
+(defn tally->score [{:keys [black white visits]}]
+  (+
+    (if (zero? (+ black white))
+      1e10
+      (/ (float black) (float (+ black white))))
+    (* epsilon (rand))))
+
+(defn tally->uct-score [tally parent-visits]
+  (+
+    (tally->score tally)
+    (* 0.1
+      (Math/sqrt
+        (/
+          (float (Math/log (+ parent-visits 1)))
+          (float (+ (:visits tally) epsilon)))))
+    (* (rand) epsilon)))
+
+(defprotocol ITallyScope
+  (add-tally [_ move tally])
+  (score [_ move]))
+
+(defprotocol IMoveExplorer
+  (best-move [_] [_ available-moves player])
+  (best-exploration [_] [_ available-moves player]))
+
+(defrecord TallyScope
+  [visits
+   move->tally]
+
+  ICloneable
+  (clone [_]
+    (TallyScope.
+      (atom @visits)
+      (atom @move->tally)))
+
+  ITallyScope
+  (add-tally [_ move tally]
+    (swap! visits inc)
+    (swap! move->tally update-in [move] merge-tallies tally))
+  (score [_ move]
+    (tally->score (@move->tally move)))
+
+  IMoveExplorer
+  (best-move [_ available-moves player]
+    (let [maximizer (if (= :black player)
+                      last
+                      first)]
+      (->> (select-keys @move->tally available-moves)
+        (remove #(-> % val :visits zero?))
+        (sort-by #(-> % val tally->score))
+        maximizer
+        first)))
+  (best-exploration [this available-moves player]
+    (let [maximizer (if (= :black player)
+                      last
+                      first)]
+      (->> (select-keys @move->tally available-moves)
+        (sort-by #(-> % val (tally->uct-score @visits)))
+        maximizer
+        first))))
+
+(defn tally-scope [dim]
+  (TallyScope.
+    (atom 0)
+    (atom
+      (zipmap
+        (range (* dim dim))
+        (repeat {:visits 0, :black 0, :white 0})))))
+
+;;;
+
+(def weight 1)
+
+#_(defn uct-value [parent child]
   (+
     (score child)
     (* weight
@@ -43,153 +110,90 @@
          (+ (visits child) epsilon))))
     (* (rand) epsilon)))
 
+;;;
 
-(def curr-board nil)
+(defprotocol INode
+  (last-move [_])
+  (next-move [_])
+  (traverse [_ playouts])
+  (set-move [_ move]))
+
+(declare node)
+
+(defn node-children [^Simulator simulator parent-scope]
+  (let [moves (conj (s/available-moves simulator) :pass)]
+    (zipmap
+      moves
+      (map #(node (s/conj-move simulator %) (tally-scope (-> simulator :board b/dim))) moves))))
 
 (defrecord Node
-  [last-move
-   color
-   ^Board board
-   children
-   win-tallies
-   visit-tally]
+  [^Simulator simulator
+   scope
+   traversed?
+   next-move
+   children]
+  IMoveExplorer
+  (best-move [_]
+    (if (and (= :pass (s/last-move simulator)) (= :black (s/player simulator)))
+      (@@children :pass)
+      (@@children
+        (or
+          @next-move
+          (best-move scope (s/available-moves simulator) (s/player simulator))))))
+  (best-exploration [_]
+    (@@children
+      (or 
+        @next-move
+        (best-exploration scope (s/available-moves simulator) (s/player simulator)))))
 
   INode
+  (last-move [_] (s/last-move simulator))
+  (next-move [_] @next-move)
+  (traverse [this playouts]
+    (if @traversed?
+      (when-let [child (best-exploration this)]
+        (let [tally (traverse child playouts)]
+          (when-not @next-move
+            (add-tally scope (last-move child) tally))
+          tally))
+      (do
+        (reset! traversed? true)
+        (s/run-playouts simulator playouts))))
+  (set-move [_ move]
+    ;;(rescale scope)
+    (assert (not @next-move))
+    (reset! next-move move)
+    (swap! @children select-keys [move])))
 
-  (score [_]
-    (let [{:keys [white black]} @win-tallies]
-      (case color
-        :white (/ black (+ white black epsilon))
-        :black (/ white (+ white black epsilon)))))
-  (visits [_] @visit-tally)
-  (add-score [_ val] (swap! win-tallies #(merge-with + % val)))
-  (add-visit [_] (swap! visit-tally inc))
-  (playout [_ n] (s/run-playouts n (clone board) color (= :pass last-move)))
-  (leaf? [_] (zero? @visit-tally))
-  (select-move [_ move]
-    (def curr-board board)
-    (when-not (contains? @@children move)
-      (throw (Exception. (str "selecting a supposedly invalid move " (p/position->gtp move (:dim board))))))
-    (when (> (count @@children) 1)
-      (b/print-board (:board (@@children move))))
-    (swap! @children #(select-keys % [move])))
-  (best-uct [this]
-    (let [children @@children]
-      (cond
-        (and (= :black color) (= :pass last-move))
-        (children :pass)
-
-        (= 1 (count children))
-        (->> children first val)
-
-        :else
-        (->> children
-          vals
-          (sort-by #(uct-value this %))
-          last))))
-  (best-move [_]
-    (let [children @@children]
-      (cond
-        (and (= :black color) (= :pass last-move))
-        (children :pass)
-
-        (= 1 (count children))
-        (->> children first val)
-
-        :else
-        (->> children
-          vals
-          (sort-by score)
-          last)))))
-
-(defn node
-  [last-move ^Board board color]
-  (let [moves (->> board
-                b/available-moves
-                (remove #(b/ko? board color (b/position board %)))
-                (remove #(b/suicide? board color (b/position board %))))
-        moves (conj moves :pass)]
-    (map->Node
-      {:last-move last-move
-       :color color
-       :board board
-       :win-tallies (atom {:white 0
-                     :black 0})
-       :visit-tally (atom 0)
-       :children (-> moves
-                   (zipmap
-                     (map
-                       (fn [move]
-                         (if (= :pass move)
-                           (node move (clone board) (p/opponent color))
-                           (node move (let [board (clone board)]
-                                        (b/add-stone board (b/position board move) color)
-                                        board)
-                             (p/opponent color))))
-                       moves))
-                   atom
-                   delay)})))
-
-(defn played-out-node [last-move ^Board board color playouts]
-  (let [moves (->> board
-                b/available-moves
-                (remove #(b/ko? board color (b/position board %)))
-                (remove #(b/suicide? board color (b/position board %))))
-        moves (conj moves :pass)]
-    (map->Node
-      {:last-move last-move
-       :color color
-       :board board
-       :win-tallies (atom {:white 0
-                     :black 0})
-       :visit-tally (atom 0)
-       :children (-> moves
-                   (zipmap
-                     (pmap
-                       (fn [move]
-                         (let [node (if (= :pass move)
-                                      (node move (clone board) (p/opponent color))
-                                      (node move (let [board (clone board)]
-                                                   (b/add-stone board (b/position board move) color)
-                                                   board)
-                                        (p/opponent color)))]
-                           (add-score node (playout node playouts))
-                           node))
-                       moves))
-                   doall
-                   atom
-                   )})))
+(defn node [simulator scope]
+  (make-record Node
+    :simulator simulator
+    :scope scope
+    :traversed? (atom false)
+    :next-move (atom nil)
+    :children (delay (atom (node-children simulator scope)))))
 
 (defn starting-node [dim]
-  (node nil (b/empty-board dim) :black))
+  (let [n (node (s/simulator (b/empty-board dim)) (tally-scope dim))]
+    (update-in n [:traversed?] #(reset! % true))
+    n))
 
-(defn traverse
-  [node]
-  (if-not node
-    0
-    (let [score (if (leaf? node)
-                  (do
-                    (playout node 1e3))
-                  (let [child (best-uct node)]
-                    (traverse child)))]
-      (add-score node score)
-      (add-visit node)
-      score)))
+;;;
 
-(defn move-seq [node]
+(defn prime-variation [node]
   (lazy-seq
-    (let [child (best-move node)
-          move (:last-move child)]
-      (select-move node move)
-      (cons move (move-seq child)))))
+    (if-let [child (best-move node)]
+      (cons node (prime-variation child))
+      [node])))
 
-(defn node-seq [node]
-  (iterate best-move node))
+(defn current-node [node]
+  (->> node prime-variation (drop-while next-move) first))
 
-(defn gen-move [node depth]
-  (nth (move-seq node) depth))
+(defn force-move [node move]
+  (set-move (current-node node) move))
 
-(defn set-move [node depth move]
-  (select-move
-    (nth (node-seq node) depth)
+(defn generate-move [node]
+  (let [current-node (current-node node)
+        move (-> (best-move current-node) :simulator s/last-move)]
+    (set-move current-node move)
     move))

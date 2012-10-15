@@ -16,7 +16,9 @@
     [pushkin.simulator :as s]
     [pushkin.test.board :as bt]
     [pushkin.position :as p]
-    [pushkin.board :as b]))
+    [pushkin.board :as b])
+  (:import
+    [pushkin.position Position]))
 
 (defn valid-move? [board color pos]
   (and
@@ -35,26 +37,40 @@
         (with-out-str (b/print-board board))))))
 
 (defn run-playout-validation [dim]
-  (let [board (b/empty-board dim)]
+  (let [selector (s/move-selector dim)
+        board (assoc (b/empty-board dim) :tracker selector)]
     (loop [player :black, pass? false, moves []]
+      ;;(b/print-board board)
       (bt/validate-board board)
-      (if-let [move (s/random-move board (b/available-moves board) player)]
-        (let [coord (p/position->gtp (.value move) dim)]
-          (is (valid-move? board player move))
+      (if-let [move (s/select-move selector board player)]
+        (do
+          (is (valid-move? board player move) (p/position->map move))
           (b/add-stone board move player)
-          (recur (p/opponent player) false (conj moves coord)))
+          (recur
+            (p/opponent player)
+            false
+            (conj moves (p/position->gtp (.value ^Position move) dim))))
         (if pass?
           (do
-            (validate-score board moves)
-            board)
-          (recur (p/opponent player) true (conj moves "pass")))))))
+            (when-not (validate-score board moves)
+              (prn moves))
+            (b/final-score board))
+          (recur (p/opponent player) true (conj moves :pass)))))))
+
+(defn print-playout [moves]
+  (loop [s (s/simulator (b/empty-board 9)), moves moves]
+    (when-not (empty? moves)
+      (let [m (first moves)]
+        (println m)
+        (b/print-board (:board s))
+        (recur (s/force-move s (p/gtp->position m 9)) (rest moves))))))
 
 (deftest ^:benchmark benchmark-playout
-  (let [board (b/empty-board 9)]
-    (bench "clone board"
-      (clone board))
-    (bench "random 9x9 playout"
-      (s/playout-game (clone board) :black false))))
+  (let [simulator (s/simulator (b/empty-board 9))]
+    (bench "clone simulator"
+      (clone simulator))
+    (long-bench "random 9x9 playout"
+      (s/playout (clone simulator)))))
 
 (deftest ^:stress validate-playouts
   (print "\nvalidating playouts") (flush)

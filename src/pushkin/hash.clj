@@ -7,6 +7,8 @@
 ;;   You must not remove this notice, or any other, from this software.
 
 (ns pushkin.hash
+  (:use
+    [pushkin.core])
   (:require
     [pushkin.position])
   (:import
@@ -30,17 +32,15 @@
 (defn empty-bitset [size]
   (BitSet. size))
 
-(let [rng (Random.)]
-  (def black-hashes (into-array BitSet (repeatedly 361 #(random-bitset rng hash-bits))))
-  (def white-hashes (into-array BitSet (repeatedly 361 #(random-bitset rng hash-bits)))))
-
-(defn ^BitSet move-hash [color ^long pos]
-  (case color
-    :black (aget ^objects black-hashes pos)
-    :white (aget ^objects white-hashes pos)))
+(let [rng (Random.)
+      black-hashes (into-array BitSet (repeatedly 361 #(random-bitset rng hash-bits)))
+      white-hashes (into-array BitSet (repeatedly 361 #(random-bitset rng hash-bits)))]
+  (defn ^BitSet move-hash [color ^long pos]
+    (case color
+      :black (aget ^objects black-hashes pos)
+      :white (aget ^objects white-hashes pos))))
 
 (defprotocol ZobristHash
-  (clone [_])
   (rotate [_])
   (toggle [_ color pos])
   (ko? [_ white-stone black-stone]))
@@ -51,10 +51,14 @@
        (into-array BitSet
          [(empty-bitset hash-bits) (empty-bitset hash-bits)])))
   ([^objects hashes]
-     (reify ZobristHash
+     (reify
+
+       ICloneable
        (clone [_]
          (zobrist-hash
            (amap hashes idx ret (.clone ^BitSet (aget hashes idx)))))
+
+       ZobristHash
        (rotate [_]
          (aset hashes 1 (.clone ^BitSet (aget hashes 0)))
          nil)
@@ -66,7 +70,7 @@
          (try
            (toggle this white-stone :white)
            (toggle this black-stone :black)
-           (= (aget hashes 0) (aget hashes 1))
+           (=(aget hashes 0) (aget hashes 1))
            (finally
              (toggle this white-stone :white)
              (toggle this black-stone :black)))))))
