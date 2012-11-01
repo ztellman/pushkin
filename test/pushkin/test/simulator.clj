@@ -63,7 +63,7 @@
       (let [m (first moves)]
         (println m)
         (b/print-board (:board s))
-        (recur (s/force-move s (p/gtp->position m 9)) (rest moves))))))
+        (recur (s/conj-move s (p/gtp->position m 9)) (rest moves))))))
 
 (deftest ^:benchmark benchmark-playout
   (let [simulator (s/simulator (b/empty-board 9))]

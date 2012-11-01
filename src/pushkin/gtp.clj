@@ -32,7 +32,7 @@
         :genmove
         (do
           (->>
-            (range 4)
+            (range 8)
             (map (fn [_]
                    (future
                      (dotimes [_ playouts]
